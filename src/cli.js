@@ -378,7 +378,7 @@ function sendHeartbeat(params) {
     "--category",
     params.category || "ai coding",
     "--plugin",
-    `codex/1.0.0 codex-app-wakatime/${VERSION}`,
+    "codex/1.0.0",
     "--config",
     paths.wakatimeConfig,
     "--log-file",
