@@ -5,6 +5,13 @@ const { spawnSync } = require("node:child_process");
 const VERSION = "0.1.0";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
+const READ_PATTERNS = [
+  /```\w*:([^\n`]+)/g,
+  /`([^`\s]+\.\w{1,6})`/g,
+  /["']([^"'\s]+\.\w{1,6})["']/g,
+  /(?:Read|List)\s+`?([^\s`\n]+\.\w{1,6})`?/gi,
+];
+const WRITE_PATTERN = /(?:Create|Created|Modify|Modified|Update|Updated|Write|Wrote|Edit|Edited|Delete|Deleted)\s+`?([^\s`\n]+\.\w{1,6})`?/gi;
 
 function basenameAny(value) {
   return String(value || "")
@@ -21,6 +28,85 @@ function wslToUnc(posixPath) {
   }
 
   return `\\\\wsl.localhost\\${distro}${posixPath.replace(/\//g, "\\")}`;
+}
+
+function isValidFilePath(filePath) {
+  if (!filePath || filePath.length === 0) {
+    return false;
+  }
+
+  if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.includes("://")) {
+    return false;
+  }
+
+  if (/[<>|?*]/.test(filePath)) {
+    return false;
+  }
+
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+
+  if (!ext || ext.length > 6) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizePath(filePath, cwd) {
+  const cleaned = filePath.trim();
+
+  if (path.isAbsolute(cleaned)) {
+    return path.normalize(cleaned);
+  }
+
+  return path.normalize(path.join(cwd, cleaned));
+}
+
+function toHeartbeatPath(filePath) {
+  if (filePath.startsWith("/")) {
+    return wslToUnc(filePath);
+  }
+
+  return filePath;
+}
+
+function extractFiles(message, cwd) {
+  if (!message || message.length === 0) {
+    return [];
+  }
+
+  const fileMap = new Map();
+  WRITE_PATTERN.lastIndex = 0;
+
+  for (const match of message.matchAll(WRITE_PATTERN)) {
+    const filePath = match[1];
+
+    if (filePath && isValidFilePath(filePath)) {
+      const normalized = normalizePath(filePath, cwd);
+      fileMap.set(normalized, true);
+    }
+  }
+
+  for (const pattern of READ_PATTERNS) {
+    pattern.lastIndex = 0;
+
+    for (const match of message.matchAll(pattern)) {
+      const filePath = match[1];
+
+      if (filePath && isValidFilePath(filePath)) {
+        const normalized = normalizePath(filePath, cwd);
+
+        if (!fileMap.has(normalized)) {
+          fileMap.set(normalized, false);
+        }
+      }
+    }
+  }
+
+  return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
+    path: filePath,
+    isWrite,
+  }));
 }
 
 function ensureDir(dirPath) {
@@ -159,11 +245,8 @@ function writeContinue(systemMessage) {
   process.stdout.write(JSON.stringify(payload));
 }
 
-function sendHeartbeat(entityPath) {
+function sendHeartbeat(params) {
   const paths = getPaths();
-  const rawCwd = entityPath || process.cwd();
-  const project = basenameAny(rawCwd);
-  const entity = "Codex";
 
   if (!fs.existsSync(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`);
@@ -172,15 +255,13 @@ function sendHeartbeat(entityPath) {
 
   const args = [
     "--entity",
-    entity,
+    params.entity,
     "--entity-type",
-    "app",
+    params.entityType,
     "--category",
-    "ai coding",
+    params.category || "ai coding",
     "--plugin",
     `codex/1.0.0 codex-app-wakatime/${VERSION}`,
-    "--project",
-    project,
     "--config",
     paths.wakatimeConfig,
     "--log-file",
@@ -191,6 +272,18 @@ function sendHeartbeat(entityPath) {
     "30",
     "--sync-ai-disabled",
   ];
+
+  if (params.projectFolder) {
+    args.push("--project-folder", params.projectFolder);
+  }
+
+  if (params.project) {
+    args.push("--project", params.project);
+  }
+
+  if (params.isWrite) {
+    args.push("--write");
+  }
 
   const result = spawnSync(paths.wakatimeCli, args, {
     encoding: "utf8",
@@ -208,8 +301,32 @@ function sendHeartbeat(entityPath) {
     return { ok: false, reason: "non_zero_exit", status: result.status };
   }
 
-  logDebug(`heartbeat sent cwd=${rawCwd}`);
-  return { ok: true, project, cwd: rawCwd, entity };
+  logDebug(`heartbeat sent entity=${params.entity}`);
+  return { ok: true, entity: params.entity };
+}
+
+function sendProjectHeartbeat(cwd) {
+  const project = basenameAny(cwd);
+  return sendHeartbeat({
+    entity: "Codex",
+    entityType: "app",
+    project,
+  });
+}
+
+function sendFileHeartbeats(files, cwd) {
+  const heartbeatProjectFolder = toHeartbeatPath(cwd);
+
+  for (const file of files) {
+    const heartbeatPath = toHeartbeatPath(file.path);
+    logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`);
+    sendHeartbeat({
+      entity: heartbeatPath,
+      entityType: "file",
+      projectFolder: heartbeatProjectFolder,
+      isWrite: file.isWrite,
+    });
+  }
 }
 
 async function runHook() {
@@ -240,7 +357,16 @@ async function runHook() {
     return;
   }
 
-  sendHeartbeat(payload.cwd || process.cwd());
+  const cwd = payload.cwd || process.cwd();
+  const files = extractFiles(lastAssistantMessage, cwd);
+  logDebug(`extracted files=${files.length}`);
+
+  if (files.length > 0) {
+    sendFileHeartbeats(files, cwd);
+  } else {
+    sendProjectHeartbeat(cwd);
+  }
+
   writeContinue();
 }
 
@@ -291,9 +417,14 @@ function status() {
 }
 
 function test(targetPath) {
-  const result = sendHeartbeat(targetPath || process.cwd());
-  console.log(JSON.stringify(result, null, 2));
-  process.exit(result.ok ? 0 : 1);
+  const cwd = targetPath || process.cwd();
+  const result = sendProjectHeartbeat(cwd);
+  console.log(JSON.stringify({
+    ...result,
+    project: basenameAny(cwd),
+    cwd,
+  }, null, 2));
+  process.exit(result && result.ok ? 0 : 1);
 }
 
 async function run(argv) {
