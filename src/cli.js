@@ -21,6 +21,44 @@ function basenameAny(value) {
     .pop() || "project";
 }
 
+function getParentDir(currentPath) {
+  const parsed = path.parse(currentPath);
+
+  if (currentPath === parsed.root) {
+    return null;
+  }
+
+  return path.dirname(currentPath);
+}
+
+function hasGitMarker(dirPath) {
+  return fs.existsSync(path.join(dirPath, ".git"));
+}
+
+function resolveProjectRoot(startPath) {
+  if (!startPath) {
+    return process.cwd();
+  }
+
+  let currentPath = path.resolve(startPath);
+
+  if (!fs.existsSync(currentPath)) {
+    currentPath = path.dirname(currentPath);
+  } else if (!fs.statSync(currentPath).isDirectory()) {
+    currentPath = path.dirname(currentPath);
+  }
+
+  while (currentPath) {
+    if (hasGitMarker(currentPath)) {
+      return currentPath;
+    }
+
+    currentPath = getParentDir(currentPath);
+  }
+
+  return path.resolve(startPath);
+}
+
 function quotePosixShellArg(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -384,7 +422,8 @@ function sendHeartbeat(params) {
 }
 
 function sendProjectHeartbeat(cwd) {
-  const project = basenameAny(cwd);
+  const projectRoot = resolveProjectRoot(cwd);
+  const project = basenameAny(projectRoot);
   return sendHeartbeat({
     entity: "Codex",
     entityType: "app",
@@ -393,7 +432,8 @@ function sendProjectHeartbeat(cwd) {
 }
 
 function sendFileHeartbeats(files, cwd) {
-  const heartbeatProjectFolder = toHeartbeatPath(cwd);
+  const projectRoot = resolveProjectRoot(cwd);
+  const heartbeatProjectFolder = toHeartbeatPath(projectRoot);
   let sentCount = 0;
 
   for (const file of files) {
@@ -467,6 +507,7 @@ async function runHook() {
   }
 
   const cwd = payload.cwd || process.cwd();
+  const projectRoot = resolveProjectRoot(cwd);
   const files = extractFiles(lastAssistantMessage, cwd).filter((file) => {
     const exists = fs.existsSync(file.path);
 
@@ -476,7 +517,7 @@ async function runHook() {
 
     return exists;
   });
-  logDebug(`extracted files=${files.length}`);
+  logDebug(`project root=${projectRoot} extracted files=${files.length}`);
 
   const signature = buildSignature(files, cwd);
 
@@ -588,10 +629,12 @@ function status() {
 
 function test(targetPath) {
   const cwd = targetPath || process.cwd();
+  const projectRoot = resolveProjectRoot(cwd);
   const result = sendProjectHeartbeat(cwd);
   console.log(JSON.stringify({
     ...result,
-    project: basenameAny(cwd),
+    project: basenameAny(projectRoot),
+    projectRoot,
     cwd,
   }, null, 2));
   process.exit(result && result.ok ? 0 : 1);
