@@ -14,6 +14,7 @@ This package installs a `Stop` hook into the Windows Codex profile and sends one
 
 ```bash
 node ./bin/codex-app-wakatime.js install
+node ./bin/codex-app-wakatime.js uninstall
 node ./bin/codex-app-wakatime.js status
 node ./bin/codex-app-wakatime.js test
 ```
@@ -22,4 +23,6 @@ node ./bin/codex-app-wakatime.js test
 
 - The generated Codex hook command uses the WSL `node` binary, so it does not need the Windows `node.exe` popup path that broke earlier.
 - Heartbeats are sent with the plugin string `codex/1.0.0 codex-app-wakatime/0.1.0`.
+- File paths are extracted from assistant output and sent as file heartbeats when possible.
+- A local state file keeps a 60-second heartbeat throttle outside the WakaTime CLI.
 - The hook always returns valid `Stop` JSON, even when WakaTime is unavailable.

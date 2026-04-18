@@ -224,6 +224,9 @@ function getPaths() {
     wakatimeCli,
     wakatimeConfig: `${windowsHome.win}\\.wakatime.cfg`,
     wakatimeLog: `${windowsHome.win}\\.wakatime\\wakatime.log`,
+    stateFile: process.platform === "win32"
+      ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime.json")
+      : path.posix.join(windowsHome.wsl, ".wakatime", "codex-app-wakatime.json"),
     codexHooks,
     codexLog,
   };
@@ -243,6 +246,40 @@ function writeContinue(systemMessage) {
   }
 
   process.stdout.write(JSON.stringify(payload));
+}
+
+function readState() {
+  const { stateFile } = getPaths();
+
+  if (!fs.existsSync(stateFile)) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeState(state) {
+  const { stateFile } = getPaths();
+  ensureDir(path.dirname(stateFile));
+  fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+function shouldSendHeartbeat(force = false) {
+  if (force) {
+    return true;
+  }
+
+  const state = readState();
+  const lastHeartbeatAt = state.lastHeartbeatAt || 0;
+  return Math.floor(Date.now() / 1000) - lastHeartbeatAt >= 60;
+}
+
+function updateLastHeartbeat() {
+  writeState({ lastHeartbeatAt: Math.floor(Date.now() / 1000) });
 }
 
 function sendHeartbeat(params) {
@@ -361,12 +398,19 @@ async function runHook() {
   const files = extractFiles(lastAssistantMessage, cwd);
   logDebug(`extracted files=${files.length}`);
 
+  if (!shouldSendHeartbeat()) {
+    logDebug("skipped heartbeat due to local rate limit");
+    writeContinue();
+    return;
+  }
+
   if (files.length > 0) {
     sendFileHeartbeats(files, cwd);
   } else {
     sendProjectHeartbeat(cwd);
   }
 
+  updateLastHeartbeat();
   writeContinue();
 }
 
@@ -401,6 +445,26 @@ function install() {
   console.log(`Installed Codex hook at ${codexHooks}`);
 }
 
+function uninstall() {
+  const { codexHooks } = getPaths();
+  const backupPath = `${codexHooks}.bak`;
+
+  if (fs.existsSync(backupPath)) {
+    fs.copyFileSync(backupPath, codexHooks);
+    fs.unlinkSync(backupPath);
+    console.log(`Restored Codex hook config from ${backupPath}`);
+    return;
+  }
+
+  if (fs.existsSync(codexHooks)) {
+    fs.unlinkSync(codexHooks);
+    console.log(`Removed Codex hook config at ${codexHooks}`);
+    return;
+  }
+
+  console.log("No Codex hook config found.");
+}
+
 function status() {
   const paths = getPaths();
   const hookConfig = readJson(paths.codexHooks);
@@ -411,6 +475,7 @@ function status() {
     binPath: BIN_PATH,
     codexHooks: paths.codexHooks,
     codexLog: paths.codexLog,
+    stateFile: paths.stateFile,
     wakatimeCli: paths.wakatimeCli,
     installedCommand: hookConfig?.hooks?.Stop?.[0]?.hooks?.[0]?.command || null,
   }, null, 2));
@@ -437,6 +502,9 @@ async function run(argv) {
     case "install":
       install();
       return;
+    case "uninstall":
+      uninstall();
+      return;
     case "status":
       status();
       return;
@@ -444,7 +512,7 @@ async function run(argv) {
       test(rest[0]);
       return;
     default:
-      console.log("Usage: codex-app-wakatime <install|status|test|hook>");
+      console.log("Usage: codex-app-wakatime <install|uninstall|status|test|hook>");
   }
 }
 

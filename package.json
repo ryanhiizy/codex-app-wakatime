@@ -8,6 +8,7 @@
   "type": "commonjs",
   "scripts": {
     "install:local": "node ./bin/codex-app-wakatime.js install",
+    "uninstall:local": "node ./bin/codex-app-wakatime.js uninstall",
     "status": "node ./bin/codex-app-wakatime.js status",
     "test": "node ./bin/codex-app-wakatime.js test"
   },
