@@ -163,7 +163,7 @@ function sendHeartbeat(entityPath) {
   const paths = getPaths();
   const rawCwd = entityPath || process.cwd();
   const project = basenameAny(rawCwd);
-  const entity = "Codex App";
+  const entity = "Codex";
 
   if (!fs.existsSync(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`);
@@ -178,7 +178,7 @@ function sendHeartbeat(entityPath) {
     "--category",
     "ai coding",
     "--plugin",
-    `codex-app/1.0.0 codex-app-wakatime/${VERSION}`,
+    `codex/1.0.0 codex-app-wakatime/${VERSION}`,
     "--project",
     project,
     "--config",
