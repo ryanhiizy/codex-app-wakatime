@@ -1,0 +1,20 @@
+{
+  "name": "codex-app-wakatime",
+  "version": "0.1.0",
+  "description": "WakaTime heartbeats for the Codex desktop app Stop hook.",
+  "bin": {
+    "codex-app-wakatime": "./bin/codex-app-wakatime.js"
+  },
+  "type": "commonjs",
+  "scripts": {
+    "install:local": "node ./bin/codex-app-wakatime.js install",
+    "status": "node ./bin/codex-app-wakatime.js status",
+    "test": "node ./bin/codex-app-wakatime.js test"
+  },
+  "keywords": [
+    "codex",
+    "wakatime",
+    "hooks"
+  ],
+  "license": "MIT"
+}
