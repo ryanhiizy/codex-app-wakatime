@@ -126,6 +126,18 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function readJsonSafe(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -268,18 +280,28 @@ function writeState(state) {
   fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-function shouldSendHeartbeat(force = false) {
+function shouldSendHeartbeat(signature, force = false) {
   if (force) {
     return true;
   }
 
   const state = readState();
   const lastHeartbeatAt = state.lastHeartbeatAt || 0;
-  return Math.floor(Date.now() / 1000) - lastHeartbeatAt >= 60;
+  const lastSignature = state.lastSignature || "";
+  const elapsed = Math.floor(Date.now() / 1000) - lastHeartbeatAt;
+
+  if (elapsed >= 60) {
+    return true;
+  }
+
+  return signature !== lastSignature;
 }
 
-function updateLastHeartbeat() {
-  writeState({ lastHeartbeatAt: Math.floor(Date.now() / 1000) });
+function updateLastHeartbeat(signature) {
+  writeState({
+    lastHeartbeatAt: Math.floor(Date.now() / 1000),
+    lastSignature: signature,
+  });
 }
 
 function sendHeartbeat(params) {
@@ -366,6 +388,30 @@ function sendFileHeartbeats(files, cwd) {
   }
 }
 
+function buildSignature(files, cwd) {
+  if (files.length === 0) {
+    return `app:${cwd}`;
+  }
+
+  return files
+    .map((file) => `${file.isWrite ? "w" : "r"}:${file.path}`)
+    .sort()
+    .join("|");
+}
+
+function buildHookEntry() {
+  return {
+    type: "command",
+    command: `node ${BIN_PATH} hook`,
+    timeout: 30,
+    statusMessage: "Sending WakaTime heartbeat",
+  };
+}
+
+function isOurHookEntry(entry) {
+  return entry && entry.type === "command" && typeof entry.command === "string" && entry.command.includes(BIN_PATH);
+}
+
 async function runHook() {
   const rawInput = await readStdin();
   logDebug(`received input bytes=${rawInput.length}`);
@@ -398,7 +444,9 @@ async function runHook() {
   const files = extractFiles(lastAssistantMessage, cwd);
   logDebug(`extracted files=${files.length}`);
 
-  if (!shouldSendHeartbeat()) {
+  const signature = buildSignature(files, cwd);
+
+  if (!shouldSendHeartbeat(signature)) {
     logDebug("skipped heartbeat due to local rate limit");
     writeContinue();
     return;
@@ -410,7 +458,7 @@ async function runHook() {
     sendProjectHeartbeat(cwd);
   }
 
-  updateLastHeartbeat();
+  updateLastHeartbeat(signature);
   writeContinue();
 }
 
@@ -419,14 +467,7 @@ function buildHookConfig() {
     hooks: {
       Stop: [
         {
-          hooks: [
-            {
-              type: "command",
-              command: `node ${BIN_PATH} hook`,
-              timeout: 30,
-              statusMessage: "Sending WakaTime heartbeat",
-            },
-          ],
+          hooks: [buildHookEntry()],
         },
       ],
     },
@@ -435,34 +476,59 @@ function buildHookConfig() {
 
 function install() {
   const { codexHooks } = getPaths();
-  const existing = readJson(codexHooks);
+  const existing = readJsonSafe(codexHooks);
+  const config = existing || { hooks: {} };
+  const stopHooks = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : [];
 
   if (existing) {
     fs.writeFileSync(`${codexHooks}.bak`, `${JSON.stringify(existing, null, 2)}\n`);
   }
 
-  writeJson(codexHooks, buildHookConfig());
+  const normalized = stopHooks.map((group) => {
+    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((entry) => !isOurHookEntry(entry)) : [];
+    return { ...group, hooks };
+  }).filter((group) => group.hooks.length > 0);
+
+  if (normalized.length === 0) {
+    normalized.push({ hooks: [buildHookEntry()] });
+  } else {
+    normalized[0].hooks.push(buildHookEntry());
+  }
+
+  config.hooks = {
+    ...(config.hooks || {}),
+    Stop: normalized,
+  };
+
+  writeJson(codexHooks, config);
   console.log(`Installed Codex hook at ${codexHooks}`);
 }
 
 function uninstall() {
   const { codexHooks } = getPaths();
-  const backupPath = `${codexHooks}.bak`;
+  const existing = readJsonSafe(codexHooks);
 
-  if (fs.existsSync(backupPath)) {
-    fs.copyFileSync(backupPath, codexHooks);
-    fs.unlinkSync(backupPath);
-    console.log(`Restored Codex hook config from ${backupPath}`);
+  if (!existing?.hooks?.Stop) {
+    console.log("No Codex hook config found.");
     return;
   }
 
-  if (fs.existsSync(codexHooks)) {
-    fs.unlinkSync(codexHooks);
-    console.log(`Removed Codex hook config at ${codexHooks}`);
-    return;
+  const normalized = existing.hooks.Stop.map((group) => {
+    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((entry) => !isOurHookEntry(entry)) : [];
+    return { ...group, hooks };
+  }).filter((group) => group.hooks.length > 0);
+
+  const nextHooks = { ...(existing.hooks || {}) };
+
+  if (normalized.length > 0) {
+    nextHooks.Stop = normalized;
+  } else {
+    delete nextHooks.Stop;
   }
 
-  console.log("No Codex hook config found.");
+  const nextConfig = { ...existing, hooks: nextHooks };
+  writeJson(codexHooks, nextConfig);
+  console.log(`Removed Codex hook entry from ${codexHooks}`);
 }
 
 function status() {
