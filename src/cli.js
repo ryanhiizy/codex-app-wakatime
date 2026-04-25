@@ -35,7 +35,7 @@ function hasGitMarker(dirPath) {
   return fs.existsSync(path.join(dirPath, ".git"));
 }
 
-function resolveProjectRoot(startPath) {
+function resolveProjectRootRaw(startPath) {
   if (!startPath) {
     return process.cwd();
   }
@@ -57,6 +57,43 @@ function resolveProjectRoot(startPath) {
   }
 
   return path.resolve(startPath);
+}
+
+function getPrimaryWorktreeRoot(projectRoot) {
+  const result = spawnSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+
+  if (result.status !== 0 || !result.stdout) {
+    return projectRoot;
+  }
+
+  const firstWorktree = result.stdout.split(/\r?\n/).find((line) => line.startsWith("worktree "));
+  const primaryRoot = firstWorktree ? firstWorktree.slice("worktree ".length).trim() : "";
+
+  if (!primaryRoot || !fs.existsSync(primaryRoot)) {
+    return projectRoot;
+  }
+
+  return path.resolve(primaryRoot);
+}
+
+function canonicalizeGitWorktreePath(filePath, projectRoot) {
+  const resolvedPath = path.resolve(filePath);
+  const primaryRoot = getPrimaryWorktreeRoot(projectRoot);
+
+  if (primaryRoot === projectRoot || !resolvedPath.startsWith(`${projectRoot}${path.sep}`)) {
+    return resolvedPath;
+  }
+
+  return path.join(primaryRoot, path.relative(projectRoot, resolvedPath));
+}
+
+function resolveProjectRoot(startPath) {
+  const rawProjectRoot = resolveProjectRootRaw(startPath);
+  return getPrimaryWorktreeRoot(rawProjectRoot);
 }
 
 function quotePosixShellArg(value) {
@@ -102,11 +139,15 @@ function isValidFilePath(filePath) {
 function normalizePath(filePath, cwd) {
   const cleaned = filePath.trim();
 
-  if (path.isAbsolute(cleaned) || isWindowsAbsolutePath(cleaned)) {
+  if (isWindowsAbsolutePath(cleaned) && process.platform !== "win32") {
     return path.normalize(cleaned);
   }
 
-  return path.normalize(path.join(cwd, cleaned));
+  const candidatePath = path.isAbsolute(cleaned) || isWindowsAbsolutePath(cleaned)
+    ? path.normalize(cleaned)
+    : path.normalize(path.join(cwd, cleaned));
+
+  return canonicalizeGitWorktreePath(candidatePath, resolveProjectRootRaw(candidatePath));
 }
 
 function toHeartbeatPath(filePath) {
@@ -378,7 +419,7 @@ function sendHeartbeat(params) {
     "--category",
     params.category || "ai coding",
     "--plugin",
-    "codex/1.0.0",
+    `codex/1.0.0 codex-app-wakatime/${VERSION}`,
     "--config",
     paths.wakatimeConfig,
     "--log-file",
