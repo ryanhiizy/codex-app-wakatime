@@ -403,6 +403,24 @@ function updateLastHeartbeat(signature) {
   });
 }
 
+function isWsl() {
+  return process.platform === "linux" && Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+}
+
+function buildWakatimeLaunch(wakatimeCli) {
+  if (isWsl() && /\.exe$/i.test(wakatimeCli) && fs.existsSync("/init")) {
+    return {
+      command: "/init",
+      argsPrefix: [wakatimeCli, "--"],
+    };
+  }
+
+  return {
+    command: wakatimeCli,
+    argsPrefix: [],
+  };
+}
+
 function sendHeartbeat(params) {
   const paths = getPaths();
 
@@ -442,7 +460,13 @@ function sendHeartbeat(params) {
     args.push("--write");
   }
 
-  const result = spawnSync(paths.wakatimeCli, args, {
+  const launch = buildWakatimeLaunch(paths.wakatimeCli);
+
+  if (launch.command !== paths.wakatimeCli) {
+    logDebug(`launching wakatime cli through ${launch.command}`);
+  }
+
+  const result = spawnSync(launch.command, [...launch.argsPrefix, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
