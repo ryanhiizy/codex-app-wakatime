@@ -1,11 +1,16 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const readline = require("node:readline");
 const { spawnSync } = require("node:child_process");
 
 const VERSION = "0.1.0";
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
+const DEFAULT_WAKATIME_EDITOR = "codex";
+const DEFAULT_WAKATIME_PLUGIN = "codex-app-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
+const PROFILE_CHOICES = ["macos", "wsl", "windows"];
 const READ_PATTERNS = [
   /```\w*:([^\n`]+)/g,
   /`([^`\s]+\.\w{1,6})`/g,
@@ -100,8 +105,11 @@ function quotePosixShellArg(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-function wslToUnc(posixPath) {
-  const distro = process.env.WSL_DISTRO_NAME || "Ubuntu";
+function quoteWindowsShellArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function wslToUnc(posixPath, distro = process.env.WSL_DISTRO_NAME || "Ubuntu") {
 
   if (!posixPath || !posixPath.startsWith("/")) {
     return posixPath;
@@ -150,12 +158,42 @@ function normalizePath(filePath, cwd) {
   return canonicalizeGitWorktreePath(candidatePath, resolveProjectRootRaw(candidatePath));
 }
 
-function toHeartbeatPath(filePath) {
-  if (filePath.startsWith("/")) {
-    return wslToUnc(filePath);
+function toHeartbeatPath(filePath, paths = getPaths()) {
+  if (paths.profile === "wsl" && filePath.startsWith("/")) {
+    return wslToUnc(filePath, paths.distro);
   }
 
   return filePath;
+}
+
+function isInsideDir(filePath, dirPath) {
+  const relativePath = path.relative(dirPath, filePath);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+function filterTrackableFiles(files, cwd, logger = () => {}) {
+  const projectRoot = resolveProjectRoot(cwd);
+
+  return files.filter((file) => {
+    if (!fs.existsSync(file.path)) {
+      logger(`skipped missing extracted file path=${file.path}`);
+      return false;
+    }
+
+    const stats = fs.statSync(file.path);
+
+    if (!stats.isFile()) {
+      logger(`skipped non-file extracted path=${file.path}`);
+      return false;
+    }
+
+    if (!isInsideDir(file.path, projectRoot)) {
+      logger(`skipped extracted file outside project path=${file.path}`);
+      return false;
+    }
+
+    return true;
+  });
 }
 
 function extractFiles(message, cwd) {
@@ -311,36 +349,97 @@ function findWindowsUserDir() {
   };
 }
 
-function getPaths() {
-  const windowsHome = findWindowsUserDir();
+function resolveInstallProfile(options = {}) {
+  const explicit = options.profile || process.env.CODEX_WAKATIME_PROFILE;
 
-  if (!windowsHome) {
-    throw new Error("Unable to find the Windows user profile needed for WakaTime.");
+  if (explicit) {
+    if (!PROFILE_CHOICES.includes(explicit)) {
+      throw new Error(`Unsupported profile "${explicit}". Expected one of: ${PROFILE_CHOICES.join(", ")}.`);
+    }
+
+    return explicit;
   }
 
-  const wakatimeCli = process.platform === "win32"
+  const platform = options.platform || process.platform;
+
+  if (platform === "darwin") {
+    return "macos";
+  }
+
+  if (platform === "win32") {
+    return "windows";
+  }
+
+  if (platform === "linux" && (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) {
+    return "wsl";
+  }
+
+  throw new Error("Unable to auto-detect platform profile. Re-run with --profile macos, --profile wsl, or --profile windows.");
+}
+
+function getDarwinWakatimeCliName(arch = process.arch) {
+  if (arch === "arm64") {
+    return "wakatime-cli-darwin-arm64";
+  }
+
+  return "wakatime-cli-darwin-amd64";
+}
+
+function resolveProfilePaths(options = {}) {
+  const profile = resolveInstallProfile(options);
+
+  if (profile === "macos") {
+    const homeDir = options.homeDir || os.homedir();
+
+    return {
+      profile,
+      homeDir,
+      distro: null,
+      wakatimeCli: options.wakatimeCli || path.join(homeDir, ".wakatime", getDarwinWakatimeCliName(options.arch)),
+      wakatimeConfig: options.wakatimeConfig || path.join(homeDir, ".wakatime.cfg"),
+      wakatimeLog: options.wakatimeLog || path.join(homeDir, ".wakatime", "wakatime.log"),
+      stateFile: options.stateFile || path.join(homeDir, ".wakatime", "codex-app-wakatime.json"),
+      codexHooks: options.codexHooks || path.join(homeDir, ".codex", "hooks.json"),
+      codexLog: options.codexLog || path.join(homeDir, ".codex", "codex-app-wakatime.log"),
+    };
+  }
+
+  const windowsHome = options.windowsHome || findWindowsUserDir();
+
+  if (!windowsHome) {
+    throw new Error(`Unable to find the Windows user profile needed for the ${profile} profile.`);
+  }
+
+  const isWindowsProfile = profile === "windows";
+  const wakatimeCli = isWindowsProfile
     ? path.win32.join(windowsHome.win, ".wakatime", "wakatime-cli-windows-amd64.exe")
     : path.posix.join(windowsHome.wsl, ".wakatime", "wakatime-cli-windows-amd64.exe");
 
-  const codexHooks = process.platform === "win32"
+  const codexHooks = isWindowsProfile
     ? path.win32.join(windowsHome.win, ".codex", "hooks.json")
     : path.posix.join(windowsHome.wsl, ".codex", "hooks.json");
 
-  const codexLog = process.platform === "win32"
+  const codexLog = isWindowsProfile
     ? path.win32.join(windowsHome.win, ".codex", "codex-app-wakatime.log")
     : path.posix.join(windowsHome.wsl, ".codex", "codex-app-wakatime.log");
 
   return {
+    profile,
     windowsHome,
-    wakatimeCli,
-    wakatimeConfig: `${windowsHome.win}\\.wakatime.cfg`,
-    wakatimeLog: `${windowsHome.win}\\.wakatime\\wakatime.log`,
-    stateFile: process.platform === "win32"
+    distro: options.distro || process.env.WSL_DISTRO_NAME || "Ubuntu",
+    wakatimeCli: options.wakatimeCli || wakatimeCli,
+    wakatimeConfig: options.wakatimeConfig || path.win32.join(windowsHome.win, ".wakatime.cfg"),
+    wakatimeLog: options.wakatimeLog || path.win32.join(windowsHome.win, ".wakatime", "wakatime.log"),
+    stateFile: options.stateFile || (isWindowsProfile
       ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime.json")
-      : path.posix.join(windowsHome.wsl, ".wakatime", "codex-app-wakatime.json"),
-    codexHooks,
-    codexLog,
+      : path.posix.join(windowsHome.wsl, ".wakatime", "codex-app-wakatime.json")),
+    codexHooks: options.codexHooks || codexHooks,
+    codexLog: options.codexLog || codexLog,
   };
+}
+
+function getPaths(options = {}) {
+  return resolveProfilePaths(options);
 }
 
 function logDebug(message) {
@@ -421,6 +520,13 @@ function buildWakatimeLaunch(wakatimeCli) {
   };
 }
 
+function buildPluginString(options = {}) {
+  const editorName = options.editorName || process.env.CODEX_WAKATIME_EDITOR || DEFAULT_WAKATIME_EDITOR;
+  const pluginName = options.pluginName || process.env.CODEX_WAKATIME_PLUGIN || DEFAULT_WAKATIME_PLUGIN;
+
+  return `${editorName}/1.0.0 ${pluginName}/${VERSION}`;
+}
+
 function sendHeartbeat(params) {
   const paths = getPaths();
 
@@ -437,7 +543,7 @@ function sendHeartbeat(params) {
     "--category",
     params.category || "ai coding",
     "--plugin",
-    `codex/1.0.0 codex-app-wakatime/${VERSION}`,
+    buildPluginString(),
     "--config",
     paths.wakatimeConfig,
     "--log-file",
@@ -497,12 +603,13 @@ function sendProjectHeartbeat(cwd) {
 }
 
 function sendFileHeartbeats(files, cwd) {
+  const paths = getPaths();
   const projectRoot = resolveProjectRoot(cwd);
-  const heartbeatProjectFolder = toHeartbeatPath(projectRoot);
+  const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
   let sentCount = 0;
 
   for (const file of files) {
-    const heartbeatPath = toHeartbeatPath(file.path);
+    const heartbeatPath = toHeartbeatPath(file.path, paths);
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`);
     const result = sendHeartbeat({
       entity: heartbeatPath,
@@ -530,10 +637,14 @@ function buildSignature(files, cwd) {
     .join("|");
 }
 
-function buildHookEntry() {
+function buildHookEntry(paths = getPaths()) {
+  const quotedBinPath = paths.profile === "windows"
+    ? quoteWindowsShellArg(BIN_PATH)
+    : quotePosixShellArg(BIN_PATH);
+
   return {
     type: "command",
-    command: `node ${quotePosixShellArg(BIN_PATH)} hook`,
+    command: `node ${quotedBinPath} hook`,
     timeout: 30,
     statusMessage: "Sending WakaTime heartbeat",
   };
@@ -541,6 +652,129 @@ function buildHookEntry() {
 
 function isOurHookEntry(entry) {
   return entry && entry.type === "command" && typeof entry.command === "string" && entry.command.includes(BIN_PATH);
+}
+
+function parseOptions(args) {
+  const options = {
+    rest: [],
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--profile") {
+      options.profile = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--profile=")) {
+      options.profile = arg.slice("--profile=".length);
+    } else if (arg === "--yes" || arg === "-y") {
+      options.yes = true;
+    } else if (arg === "--skip-checks") {
+      options.skipChecks = true;
+    } else if (arg === "--home") {
+      options.homeDir = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--home=")) {
+      options.homeDir = arg.slice("--home=".length);
+    } else if (arg === "--wakatime-cli") {
+      options.wakatimeCli = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--wakatime-cli=")) {
+      options.wakatimeCli = arg.slice("--wakatime-cli=".length);
+    } else if (arg === "--wakatime-config") {
+      options.wakatimeConfig = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--wakatime-config=")) {
+      options.wakatimeConfig = arg.slice("--wakatime-config=".length);
+    } else if (arg === "--codex-hooks") {
+      options.codexHooks = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--codex-hooks=")) {
+      options.codexHooks = arg.slice("--codex-hooks=".length);
+    } else {
+      options.rest.push(arg);
+    }
+  }
+
+  return options;
+}
+
+function prompt(question) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+async function chooseProfile(options = {}) {
+  if (options.profile || options.yes || !process.stdin.isTTY || !process.stdout.isTTY) {
+    return resolveInstallProfile(options);
+  }
+
+  let detected = null;
+
+  try {
+    detected = resolveInstallProfile(options);
+  } catch {
+    detected = "macos";
+  }
+
+  console.log("Choose where Codex runs:");
+  PROFILE_CHOICES.forEach((profile, index) => {
+    const marker = profile === detected ? " (detected)" : "";
+    console.log(`${index + 1}. ${profile}${marker}`);
+  });
+
+  const answer = await prompt(`Profile [${detected}]: `);
+
+  if (!answer) {
+    return detected;
+  }
+
+  if (/^\d+$/.test(answer)) {
+    const choice = PROFILE_CHOICES[Number(answer) - 1];
+
+    if (choice) {
+      return choice;
+    }
+  }
+
+  if (PROFILE_CHOICES.includes(answer)) {
+    return answer;
+  }
+
+  throw new Error(`Unsupported profile "${answer}". Expected one of: ${PROFILE_CHOICES.join(", ")}.`);
+}
+
+function validateSetup(paths) {
+  const failures = [];
+
+  if (!fs.existsSync(paths.wakatimeCli)) {
+    failures.push(`missing WakaTime CLI: ${paths.wakatimeCli}`);
+  }
+
+  if (!fs.existsSync(paths.wakatimeConfig)) {
+    failures.push(`missing WakaTime config: ${paths.wakatimeConfig}`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`Setup check failed for ${paths.profile}:\n- ${failures.join("\n- ")}`);
+  }
+}
+
+function getSetupChecks(paths) {
+  return {
+    codexHooksExists: fs.existsSync(paths.codexHooks),
+    wakatimeCliExists: fs.existsSync(paths.wakatimeCli),
+    wakatimeConfigExists: fs.existsSync(paths.wakatimeConfig),
+  };
 }
 
 async function runHook() {
@@ -573,15 +807,7 @@ async function runHook() {
 
   const cwd = payload.cwd || process.cwd();
   const projectRoot = resolveProjectRoot(cwd);
-  const files = extractFiles(lastAssistantMessage, cwd).filter((file) => {
-    const exists = fs.existsSync(file.path);
-
-    if (!exists) {
-      logDebug(`skipped missing extracted file path=${file.path}`);
-    }
-
-    return exists;
-  });
+  const files = filterTrackableFiles(extractFiles(lastAssistantMessage, cwd), cwd, logDebug);
   logDebug(`project root=${projectRoot} extracted files=${files.length}`);
 
   const signature = buildSignature(files, cwd);
@@ -607,20 +833,14 @@ async function runHook() {
   writeContinue();
 }
 
-function buildHookConfig() {
-  return {
-    hooks: {
-      Stop: [
-        {
-          hooks: [buildHookEntry()],
-        },
-      ],
-    },
-  };
-}
+function install(options = {}) {
+  const paths = getPaths(options);
+  const { codexHooks } = paths;
 
-function install() {
-  const { codexHooks } = getPaths();
+  if (!options.skipChecks) {
+    validateSetup(paths);
+  }
+
   const existing = readJsonSafe(codexHooks);
   const config = existing || { hooks: {} };
   const stopHooks = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : [];
@@ -635,9 +855,9 @@ function install() {
   }).filter((group) => group.hooks.length > 0);
 
   if (normalized.length === 0) {
-    normalized.push({ hooks: [buildHookEntry()] });
+    normalized.push({ hooks: [buildHookEntry(paths)] });
   } else {
-    normalized[0].hooks.push(buildHookEntry());
+    normalized[0].hooks.push(buildHookEntry(paths));
   }
 
   config.hooks = {
@@ -646,11 +866,11 @@ function install() {
   };
 
   writeJson(codexHooks, config);
-  console.log(`Installed Codex hook at ${codexHooks}`);
+  console.log(`Installed Codex hook for ${paths.profile} at ${codexHooks}`);
 }
 
-function uninstall() {
-  const { codexHooks } = getPaths();
+function uninstall(options = {}) {
+  const { codexHooks } = getPaths(options);
   const existing = readJsonSafe(codexHooks);
 
   if (!existing?.hooks?.Stop) {
@@ -676,20 +896,42 @@ function uninstall() {
   console.log(`Removed Codex hook entry from ${codexHooks}`);
 }
 
-function status() {
-  const paths = getPaths();
+function status(options = {}) {
+  const paths = getPaths(options);
   const hookConfig = readJson(paths.codexHooks);
 
   console.log(JSON.stringify({
     version: VERSION,
+    profile: paths.profile,
     rootDir: ROOT_DIR,
     binPath: BIN_PATH,
     codexHooks: paths.codexHooks,
     codexLog: paths.codexLog,
     stateFile: paths.stateFile,
     wakatimeCli: paths.wakatimeCli,
+    wakatimePlugin: buildPluginString(),
+    checks: {
+      ...getSetupChecks(paths),
+    },
     installedCommand: hookConfig?.hooks?.Stop?.[0]?.hooks?.[0]?.command || null,
   }, null, 2));
+}
+
+function doctor(options = {}) {
+  const paths = getPaths(options);
+  const checks = getSetupChecks(paths);
+
+  console.log(JSON.stringify({
+    profile: paths.profile,
+    codexHooks: paths.codexHooks,
+    wakatimeCli: paths.wakatimeCli,
+    wakatimeConfig: paths.wakatimeConfig,
+    wakatimePlugin: buildPluginString(),
+    checks,
+  }, null, 2));
+
+  validateSetup(paths);
+  console.log("Setup checks passed.");
 }
 
 function test(targetPath) {
@@ -707,28 +949,42 @@ function test(targetPath) {
 
 async function run(argv) {
   const [command, ...rest] = argv;
+  const options = parseOptions(rest);
 
   switch (command) {
     case "hook":
       await runHook();
       return;
     case "install":
-      install();
+    case "setup":
+      options.profile = await chooseProfile(options);
+      install(options);
       return;
     case "uninstall":
-      uninstall();
+      uninstall(options);
       return;
     case "status":
-      status();
+      status(options);
+      return;
+    case "doctor":
+      doctor(options);
       return;
     case "test":
-      test(rest[0]);
+      test(options.rest[0]);
       return;
     default:
-      console.log("Usage: codex-app-wakatime <install|uninstall|status|test|hook>");
+      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--profile macos|wsl|windows] [--skip-checks]");
   }
 }
 
 module.exports = {
   run,
+  resolveInstallProfile,
+  resolveProfilePaths,
+  toHeartbeatPath,
+  validateSetup,
+  buildHookEntry,
+  buildPluginString,
+  parseOptions,
+  filterTrackableFiles,
 };

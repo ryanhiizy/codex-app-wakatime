@@ -7,10 +7,13 @@
   },
   "type": "commonjs",
   "scripts": {
+    "setup": "node ./bin/codex-app-wakatime.js setup",
     "install:local": "node ./bin/codex-app-wakatime.js install",
     "uninstall:local": "node ./bin/codex-app-wakatime.js uninstall",
     "status": "node ./bin/codex-app-wakatime.js status",
-    "test": "node ./bin/codex-app-wakatime.js test"
+    "doctor": "node ./bin/codex-app-wakatime.js doctor",
+    "test:heartbeat": "node ./bin/codex-app-wakatime.js test",
+    "test": "node --test"
   },
   "keywords": [
     "codex",
