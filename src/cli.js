@@ -386,6 +386,18 @@ function commandExists(command) {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
+function commandOrFileExists(command) {
+  if (!command) {
+    return false;
+  }
+
+  if (path.isAbsolute(command) || isWindowsAbsolutePath(command) || command.includes("/") || command.includes("\\")) {
+    return fs.existsSync(command);
+  }
+
+  return commandExists(command);
+}
+
 function findNativeWakatimeCli(homeDir, options = {}) {
   if (options.wakatimeCli) {
     return options.wakatimeCli;
@@ -553,7 +565,7 @@ function buildPluginString(options = {}) {
 function sendHeartbeat(params) {
   const paths = getPaths();
 
-  if (!fs.existsSync(paths.wakatimeCli)) {
+  if (!commandOrFileExists(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`);
     return { ok: false, reason: "missing_wakatime_cli" };
   }
@@ -722,7 +734,7 @@ function parseOptions(args) {
 function validateSetup(paths) {
   const failures = [];
 
-  if (!fs.existsSync(paths.wakatimeCli)) {
+  if (!commandOrFileExists(paths.wakatimeCli)) {
     failures.push(`missing WakaTime CLI: ${paths.wakatimeCli}`);
   }
 
@@ -738,7 +750,7 @@ function validateSetup(paths) {
 function getSetupChecks(paths) {
   return {
     codexHooksExists: fs.existsSync(paths.codexHooks),
-    wakatimeCliExists: fs.existsSync(paths.wakatimeCli),
+    wakatimeCliExists: commandOrFileExists(paths.wakatimeCli),
     wakatimeConfigExists: fs.existsSync(paths.wakatimeConfig),
   };
 }
