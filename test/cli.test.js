@@ -143,8 +143,8 @@ test("parseOptions keeps positional arguments separate from option flags", () =>
   assert.deepEqual(options.rest, ["/tmp/project"]);
 });
 
-test("buildPluginString uses the package identity", () => {
-  assert.equal(cli.buildPluginString(), "codex/1.0.0 codex-app-wakatime/0.1.0");
+test("buildPluginString uses the WakaTime Codex identity", () => {
+  assert.equal(cli.buildPluginString(), "codex/1.0.0 codex-wakatime/0.1.0");
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
