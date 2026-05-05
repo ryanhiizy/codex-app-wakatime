@@ -24,7 +24,7 @@ WakaTime CLI lookup:
 
 | Environment | CLI path |
 | --- | --- |
-| Windows + WSL | `/mnt/c/Users/<user>/.wakatime/wakatime-cli-windows-amd64.exe` |
+| Windows + WSL | `WAKATIME_CLI_PATH` or `/mnt/c/Users/<user>/.wakatime/wakatime-cli-windows-amd64.exe` |
 | macOS/native Linux | `WAKATIME_CLI_PATH`, `~/.wakatime/wakatime-cli`, `~/.wakatime/wakatime-cli-<platform>-<arch>`, or `wakatime-cli` on `PATH` |
 
 > For Codex installed on Windows but working on a project inside WSL, install and configure WakaTime on Windows. The hook runs from WSL but sends heartbeats through the Windows WakaTime CLI.

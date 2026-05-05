@@ -9,6 +9,7 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
 const DEFAULT_WAKATIME_PLUGIN = "codex-app-wakatime";
+const HOOK_COMMAND_MARKER = "codex-app-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const READ_PATTERNS = [
   /```\w*:([^\n`]+)/g,
@@ -433,7 +434,7 @@ function resolveRuntimePaths(options = {}) {
   }
 
   const isWindowsRuntime = runtime === "windows";
-  const wakatimeCli = isWindowsRuntime
+  const defaultWakatimeCli = isWindowsRuntime
     ? path.win32.join(windowsHome.win, ".wakatime", "wakatime-cli-windows-amd64.exe")
     : path.posix.join(windowsHome.wsl, ".wakatime", "wakatime-cli-windows-amd64.exe");
 
@@ -449,7 +450,7 @@ function resolveRuntimePaths(options = {}) {
     runtime,
     windowsHome,
     distro: options.distro || process.env.WSL_DISTRO_NAME || "Ubuntu",
-    wakatimeCli: options.wakatimeCli || wakatimeCli,
+    wakatimeCli: options.wakatimeCli || process.env.WAKATIME_CLI_PATH || defaultWakatimeCli,
     wakatimeConfig: options.wakatimeConfig || path.win32.join(windowsHome.win, ".wakatime.cfg"),
     wakatimeLog: options.wakatimeLog || path.win32.join(windowsHome.win, ".wakatime", "wakatime.log"),
     stateFile: options.stateFile || (isWindowsRuntime
@@ -673,7 +674,11 @@ function buildHookEntry(paths = getPaths()) {
 }
 
 function isOurHookEntry(entry) {
-  return entry && entry.type === "command" && typeof entry.command === "string" && entry.command.includes(BIN_PATH);
+  return entry
+    && entry.type === "command"
+    && typeof entry.command === "string"
+    && entry.command.includes(HOOK_COMMAND_MARKER)
+    && /\bhook\b/.test(entry.command);
 }
 
 function parseOptions(args) {
@@ -944,6 +949,7 @@ module.exports = {
   toHeartbeatPath,
   validateSetup,
   buildHookEntry,
+  isOurHookEntry,
   buildPluginString,
   parseOptions,
   filterTrackableFiles,

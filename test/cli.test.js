@@ -40,6 +40,30 @@ test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to U
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
+test("wsl runtime accepts WAKATIME_CLI_PATH override", () => {
+  const previous = process.env.WAKATIME_CLI_PATH;
+  process.env.WAKATIME_CLI_PATH = "/custom/wakatime-cli";
+
+  try {
+    const paths = cli.resolveRuntimePaths({
+      platform: "linux",
+      isWsl: true,
+      windowsHome: {
+        win: "C:\\Users\\User",
+        wsl: "/mnt/c/Users/User",
+      },
+    });
+
+    assert.equal(paths.wakatimeCli, "/custom/wakatime-cli");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.WAKATIME_CLI_PATH;
+    } else {
+      process.env.WAKATIME_CLI_PATH = previous;
+    }
+  }
+});
+
 test("windows runtime uses native Windows paths", () => {
   const paths = cli.resolveRuntimePaths({
     platform: "win32",
@@ -95,6 +119,21 @@ test("hook command uses shell quoting for the selected runtime", () => {
 
   assert.match(macCommand, /^node '.+' hook$/);
   assert.match(windowsCommand, /^node ".+" hook$/);
+});
+
+test("hook matching replaces old installs from different package paths", () => {
+  assert.equal(cli.isOurHookEntry({
+    type: "command",
+    command: "node '/tmp/local/codex-app-wakatime/bin/codex-app-wakatime.js' hook",
+  }), true);
+  assert.equal(cli.isOurHookEntry({
+    type: "command",
+    command: "node '/usr/local/lib/node_modules/codex-app-wakatime/bin/codex-app-wakatime.js' hook",
+  }), true);
+  assert.equal(cli.isOurHookEntry({
+    type: "command",
+    command: "node '/tmp/other-tool/bin/other-tool.js' hook",
+  }), false);
 });
 
 test("parseOptions keeps positional arguments separate from option flags", () => {
