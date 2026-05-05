@@ -2,23 +2,48 @@
   "name": "codex-app-wakatime",
   "version": "0.1.0",
   "description": "WakaTime heartbeats for the Codex desktop app Stop hook.",
+  "main": "./src/cli.js",
   "bin": {
     "codex-app-wakatime": "./bin/codex-app-wakatime.js"
   },
   "type": "commonjs",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "check": "node --check ./bin/codex-app-wakatime.js && node --check ./src/cli.js",
     "setup": "node ./bin/codex-app-wakatime.js setup",
     "install:local": "node ./bin/codex-app-wakatime.js install",
     "uninstall:local": "node ./bin/codex-app-wakatime.js uninstall",
     "status": "node ./bin/codex-app-wakatime.js status",
     "doctor": "node ./bin/codex-app-wakatime.js doctor",
     "test:heartbeat": "node ./bin/codex-app-wakatime.js test",
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "npm run check && npm test && npm pack --dry-run"
   },
   "keywords": [
+    "ai",
     "codex",
+    "openai-codex",
     "wakatime",
     "hooks"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanhiizy/codex-app-wakatime.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryanhiizy/codex-app-wakatime/issues"
+  },
+  "homepage": "https://github.com/ryanhiizy/codex-app-wakatime#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }

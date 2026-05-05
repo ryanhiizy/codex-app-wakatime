@@ -1,16 +1,15 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const readline = require("node:readline");
 const { spawnSync } = require("node:child_process");
+const packageJson = require("../package.json");
 
-const VERSION = "0.1.0";
+const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
 const DEFAULT_WAKATIME_PLUGIN = "codex-app-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-const PROFILE_CHOICES = ["macos", "wsl", "windows"];
 const READ_PATTERNS = [
   /```\w*:([^\n`]+)/g,
   /`([^`\s]+\.\w{1,6})`/g,
@@ -159,7 +158,7 @@ function normalizePath(filePath, cwd) {
 }
 
 function toHeartbeatPath(filePath, paths = getPaths()) {
-  if (paths.profile === "wsl" && filePath.startsWith("/")) {
+  if (paths.runtime === "wsl" && filePath.startsWith("/")) {
     return wslToUnc(filePath, paths.distro);
   }
 
@@ -349,17 +348,7 @@ function findWindowsUserDir() {
   };
 }
 
-function resolveInstallProfile(options = {}) {
-  const explicit = options.profile || process.env.CODEX_WAKATIME_PROFILE;
-
-  if (explicit) {
-    if (!PROFILE_CHOICES.includes(explicit)) {
-      throw new Error(`Unsupported profile "${explicit}". Expected one of: ${PROFILE_CHOICES.join(", ")}.`);
-    }
-
-    return explicit;
-  }
-
+function detectRuntime(options = {}) {
   const platform = options.platform || process.platform;
 
   if (platform === "darwin") {
@@ -370,11 +359,11 @@ function resolveInstallProfile(options = {}) {
     return "windows";
   }
 
-  if (platform === "linux" && (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) {
+  if (platform === "linux" && (options.isWsl || process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP)) {
     return "wsl";
   }
 
-  throw new Error("Unable to auto-detect platform profile. Re-run with --profile macos, --profile wsl, or --profile windows.");
+  throw new Error("Unable to auto-detect supported runtime. Expected macOS, Windows, or WSL.");
 }
 
 function getDarwinWakatimeCliName(arch = process.arch) {
@@ -385,17 +374,50 @@ function getDarwinWakatimeCliName(arch = process.arch) {
   return "wakatime-cli-darwin-amd64";
 }
 
-function resolveProfilePaths(options = {}) {
-  const profile = resolveInstallProfile(options);
+function commandExists(command) {
+  const result = spawnSync(process.platform === "win32" ? "where" : "command", process.platform === "win32" ? [command] : ["-v", command], {
+    encoding: "utf8",
+    shell: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
 
-  if (profile === "macos") {
+  return result.status === 0 && result.stdout.trim().length > 0;
+}
+
+function findNativeWakatimeCli(homeDir, options = {}) {
+  if (options.wakatimeCli) {
+    return options.wakatimeCli;
+  }
+
+  if (process.env.WAKATIME_CLI_PATH) {
+    return process.env.WAKATIME_CLI_PATH;
+  }
+
+  const candidates = [
+    path.join(homeDir, ".wakatime", "wakatime-cli"),
+    path.join(homeDir, ".wakatime", getDarwinWakatimeCliName(options.arch)),
+  ];
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+
+  if (existing) {
+    return existing;
+  }
+
+  return commandExists("wakatime-cli") ? "wakatime-cli" : candidates[1];
+}
+
+function resolveRuntimePaths(options = {}) {
+  const runtime = detectRuntime(options);
+
+  if (runtime === "macos") {
     const homeDir = options.homeDir || os.homedir();
 
     return {
-      profile,
+      runtime,
       homeDir,
       distro: null,
-      wakatimeCli: options.wakatimeCli || path.join(homeDir, ".wakatime", getDarwinWakatimeCliName(options.arch)),
+      wakatimeCli: findNativeWakatimeCli(homeDir, options),
       wakatimeConfig: options.wakatimeConfig || path.join(homeDir, ".wakatime.cfg"),
       wakatimeLog: options.wakatimeLog || path.join(homeDir, ".wakatime", "wakatime.log"),
       stateFile: options.stateFile || path.join(homeDir, ".wakatime", "codex-app-wakatime.json"),
@@ -407,30 +429,30 @@ function resolveProfilePaths(options = {}) {
   const windowsHome = options.windowsHome || findWindowsUserDir();
 
   if (!windowsHome) {
-    throw new Error(`Unable to find the Windows user profile needed for the ${profile} profile.`);
+    throw new Error(`Unable to find the Windows user profile needed for the ${runtime} runtime.`);
   }
 
-  const isWindowsProfile = profile === "windows";
-  const wakatimeCli = isWindowsProfile
+  const isWindowsRuntime = runtime === "windows";
+  const wakatimeCli = isWindowsRuntime
     ? path.win32.join(windowsHome.win, ".wakatime", "wakatime-cli-windows-amd64.exe")
     : path.posix.join(windowsHome.wsl, ".wakatime", "wakatime-cli-windows-amd64.exe");
 
-  const codexHooks = isWindowsProfile
+  const codexHooks = isWindowsRuntime
     ? path.win32.join(windowsHome.win, ".codex", "hooks.json")
     : path.posix.join(windowsHome.wsl, ".codex", "hooks.json");
 
-  const codexLog = isWindowsProfile
+  const codexLog = isWindowsRuntime
     ? path.win32.join(windowsHome.win, ".codex", "codex-app-wakatime.log")
     : path.posix.join(windowsHome.wsl, ".codex", "codex-app-wakatime.log");
 
   return {
-    profile,
+    runtime,
     windowsHome,
     distro: options.distro || process.env.WSL_DISTRO_NAME || "Ubuntu",
     wakatimeCli: options.wakatimeCli || wakatimeCli,
     wakatimeConfig: options.wakatimeConfig || path.win32.join(windowsHome.win, ".wakatime.cfg"),
     wakatimeLog: options.wakatimeLog || path.win32.join(windowsHome.win, ".wakatime", "wakatime.log"),
-    stateFile: options.stateFile || (isWindowsProfile
+    stateFile: options.stateFile || (isWindowsRuntime
       ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime.json")
       : path.posix.join(windowsHome.wsl, ".wakatime", "codex-app-wakatime.json")),
     codexHooks: options.codexHooks || codexHooks,
@@ -439,7 +461,7 @@ function resolveProfilePaths(options = {}) {
 }
 
 function getPaths(options = {}) {
-  return resolveProfilePaths(options);
+  return resolveRuntimePaths(options);
 }
 
 function logDebug(message) {
@@ -638,7 +660,7 @@ function buildSignature(files, cwd) {
 }
 
 function buildHookEntry(paths = getPaths()) {
-  const quotedBinPath = paths.profile === "windows"
+  const quotedBinPath = paths.runtime === "windows"
     ? quoteWindowsShellArg(BIN_PATH)
     : quotePosixShellArg(BIN_PATH);
 
@@ -662,14 +684,7 @@ function parseOptions(args) {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
 
-    if (arg === "--profile") {
-      options.profile = args[index + 1];
-      index += 1;
-    } else if (arg.startsWith("--profile=")) {
-      options.profile = arg.slice("--profile=".length);
-    } else if (arg === "--yes" || arg === "-y") {
-      options.yes = true;
-    } else if (arg === "--skip-checks") {
+    if (arg === "--skip-checks") {
       options.skipChecks = true;
     } else if (arg === "--home") {
       options.homeDir = args[index + 1];
@@ -699,60 +714,6 @@ function parseOptions(args) {
   return options;
 }
 
-function prompt(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
-async function chooseProfile(options = {}) {
-  if (options.profile || options.yes || !process.stdin.isTTY || !process.stdout.isTTY) {
-    return resolveInstallProfile(options);
-  }
-
-  let detected = null;
-
-  try {
-    detected = resolveInstallProfile(options);
-  } catch {
-    detected = "macos";
-  }
-
-  console.log("Choose where Codex runs:");
-  PROFILE_CHOICES.forEach((profile, index) => {
-    const marker = profile === detected ? " (detected)" : "";
-    console.log(`${index + 1}. ${profile}${marker}`);
-  });
-
-  const answer = await prompt(`Profile [${detected}]: `);
-
-  if (!answer) {
-    return detected;
-  }
-
-  if (/^\d+$/.test(answer)) {
-    const choice = PROFILE_CHOICES[Number(answer) - 1];
-
-    if (choice) {
-      return choice;
-    }
-  }
-
-  if (PROFILE_CHOICES.includes(answer)) {
-    return answer;
-  }
-
-  throw new Error(`Unsupported profile "${answer}". Expected one of: ${PROFILE_CHOICES.join(", ")}.`);
-}
-
 function validateSetup(paths) {
   const failures = [];
 
@@ -765,7 +726,7 @@ function validateSetup(paths) {
   }
 
   if (failures.length > 0) {
-    throw new Error(`Setup check failed for ${paths.profile}:\n- ${failures.join("\n- ")}`);
+    throw new Error(`Setup check failed for ${paths.runtime}:\n- ${failures.join("\n- ")}`);
   }
 }
 
@@ -866,7 +827,7 @@ function install(options = {}) {
   };
 
   writeJson(codexHooks, config);
-  console.log(`Installed Codex hook for ${paths.profile} at ${codexHooks}`);
+  console.log(`Installed Codex hook at ${codexHooks}`);
 }
 
 function uninstall(options = {}) {
@@ -902,7 +863,7 @@ function status(options = {}) {
 
   console.log(JSON.stringify({
     version: VERSION,
-    profile: paths.profile,
+    runtime: paths.runtime,
     rootDir: ROOT_DIR,
     binPath: BIN_PATH,
     codexHooks: paths.codexHooks,
@@ -922,7 +883,7 @@ function doctor(options = {}) {
   const checks = getSetupChecks(paths);
 
   console.log(JSON.stringify({
-    profile: paths.profile,
+    runtime: paths.runtime,
     codexHooks: paths.codexHooks,
     wakatimeCli: paths.wakatimeCli,
     wakatimeConfig: paths.wakatimeConfig,
@@ -957,7 +918,6 @@ async function run(argv) {
       return;
     case "install":
     case "setup":
-      options.profile = await chooseProfile(options);
       install(options);
       return;
     case "uninstall":
@@ -973,14 +933,14 @@ async function run(argv) {
       test(options.rest[0]);
       return;
     default:
-      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--profile macos|wsl|windows] [--skip-checks]");
+      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--skip-checks]");
   }
 }
 
 module.exports = {
   run,
-  resolveInstallProfile,
-  resolveProfilePaths,
+  detectRuntime,
+  resolveRuntimePaths,
   toHeartbeatPath,
   validateSetup,
   buildHookEntry,
