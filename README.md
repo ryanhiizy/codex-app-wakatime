@@ -6,12 +6,19 @@ WakaTime heartbeats for the Codex desktop app.
 
 ## What It Does
 
-- Installs a Codex desktop app `Stop` hook.
-- Sends a WakaTime heartbeat after completed assistant turns.
-- Attributes activity to files and projects when Codex output includes detectable file paths.
+- Installs Codex desktop app `PostToolUse` and `Stop` hooks.
+- Records files edited by Codex `apply_patch`, `Edit`, and `Write` tool calls during a turn.
+- Sends WakaTime heartbeats after completed assistant turns.
+- Attributes activity to the edited files when Codex exposes them through hook payloads.
 - Falls back to project-level app activity when no file path is available.
 
-> All Codex assistant activity is tracked. When there is no file edit or detectable file path, WakaTime may show that activity as `Other`.
+> All Codex assistant activity is tracked. When there is no detected file edit, WakaTime may show that activity as project-level `Other` time.
+
+## File Attribution
+
+`PostToolUse` hooks only collect edited files from structured write-tool payloads. The `Stop` hook sends the heartbeat at the end of the turn using the files remembered for that turn.
+
+This intentionally ignores broad assistant text scraping, shell command output, package-manager side effects, formatters, generated files, and files created by external tools. Those cases still count as Codex activity, but they are attributed to the project instead of a large guessed file list.
 
 ## Prerequisites
 
@@ -38,6 +45,12 @@ codex-app-wakatime install
 
 Restart Codex after installing or changing hooks.
 
+If the installer cannot validate paths but `status` or `test` shows WakaTime is working, you can install without validation:
+
+```bash
+codex-app-wakatime install --skip-checks
+```
+
 ### Existing Hooks
 
 Install keeps existing hooks from other tools, replaces any previous `codex-app-wakatime` entry, and backs up the previous hook file to `hooks.json.bak`.
@@ -46,8 +59,8 @@ Install keeps existing hooks from other tools, replaces any previous `codex-app-
 
 | Command | Purpose |
 | --- | --- |
-| `codex-app-wakatime install` | Add the Codex `Stop` hook. |
-| `codex-app-wakatime uninstall` | Remove only this package's Codex hook entry. |
+| `codex-app-wakatime install` | Add the Codex `PostToolUse` and `Stop` hooks. |
+| `codex-app-wakatime uninstall` | Remove only this package's Codex hook entries. |
 | `codex-app-wakatime status` | Print hook, log, state, WakaTime CLI, and installed command paths. |
 | `codex-app-wakatime doctor` | Check that WakaTime CLI/config paths are available. |
 | `codex-app-wakatime test [path]` | Send one project heartbeat for the current directory or optional path. |

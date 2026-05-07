@@ -1,7 +1,7 @@
 {
   "name": "codex-app-wakatime",
   "version": "0.1.1",
-  "description": "WakaTime heartbeats for the Codex desktop app Stop hook.",
+  "description": "WakaTime heartbeats for Codex desktop app hooks.",
   "main": "./src/cli.js",
   "bin": {
     "codex-app-wakatime": "bin/codex-app-wakatime.js"
