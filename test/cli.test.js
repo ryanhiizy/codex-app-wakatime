@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const packageJson = require("../package.json");
 
 const cli = require("../src/cli");
 
@@ -144,14 +145,14 @@ test("parseOptions keeps positional arguments separate from option flags", () =>
 });
 
 test("buildPluginString uses the WakaTime Codex identity", () => {
-  assert.equal(cli.buildPluginString(), "codex/1.0.0 codex-wakatime/0.1.0");
+  assert.equal(cli.buildPluginString(), `codex/1.0.0 codex-wakatime/${packageJson.version}`);
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
   assert.equal(cli.buildPluginString({
     editorName: "cursor",
     pluginName: "codex-wakatime",
-  }), "cursor/1.0.0 codex-wakatime/0.1.0");
+  }), `cursor/1.0.0 codex-wakatime/${packageJson.version}`);
 });
 
 test("filterTrackableFiles keeps only existing files inside the project", () => {
@@ -171,4 +172,65 @@ test("filterTrackableFiles keeps only existing files inside the project", () => 
   assert.deepEqual(files, [
     { path: sourceFile, isWrite: true },
   ]);
+});
+
+test("extractEditedFilesFromPatch reads apply_patch file headers", () => {
+  const cwd = path.join(os.tmpdir(), "codex-wakatime-patch-project");
+  const addedFile = path.join(cwd, "src", "added.ts");
+  const updatedFile = path.join(cwd, "src", "updated.ts");
+  const movedFile = path.join(cwd, "src", "new-name.ts");
+
+  const files = cli.extractEditedFilesFromPatch([
+    "*** Begin Patch",
+    "*** Add File: src/added.ts",
+    "+export {};",
+    "*** Update File: src/updated.ts",
+    "@@",
+    "-old",
+    "+new",
+    "*** Move to: src/new-name.ts",
+    "*** End Patch",
+  ].join("\n"), cwd);
+
+  assert.deepEqual(files, [
+    { path: addedFile, isWrite: true },
+    { path: updatedFile, isWrite: true },
+    { path: movedFile, isWrite: true },
+  ]);
+});
+
+test("extractEditedFilesFromHookPayload only accepts edit tool events", () => {
+  const cwd = path.join(os.tmpdir(), "codex-wakatime-hook-payload-project");
+  const sourceFile = path.join(cwd, "src", "cli.js");
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: src/cli.js",
+    "@@",
+    "-old",
+    "+new",
+    "*** End Patch",
+  ].join("\n");
+
+  assert.deepEqual(cli.extractEditedFilesFromHookPayload({
+    hook_event_name: "PostToolUse",
+    tool_name: "apply_patch",
+    tool_input: { command: patch },
+  }, cwd), [
+    { path: sourceFile, isWrite: true },
+  ]);
+
+  assert.deepEqual(cli.extractEditedFilesFromHookPayload({
+    hook_event_name: "PostToolUse",
+    tool_name: "Bash",
+    tool_input: { command: "sed -n '1,20p' src/cli.js" },
+  }, cwd), []);
+});
+
+test("limitFilesForHeartbeats caps large extraction bursts", () => {
+  const files = Array.from({ length: 25 }, (_, index) => ({
+    path: `/tmp/project/file-${index}.js`,
+    isWrite: false,
+  }));
+
+  assert.deepEqual(cli.limitFilesForHeartbeats(files), files.slice(0, 20));
 });

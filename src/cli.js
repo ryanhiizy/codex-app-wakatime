@@ -9,15 +9,50 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
 const DEFAULT_WAKATIME_PLUGIN = "codex-wakatime";
+const MAX_FILE_HEARTBEATS_PER_HOOK = 20;
+const MAX_TRACKED_TURNS = 100;
 const HOOK_COMMAND_MARKER = "codex-app-wakatime";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-const READ_PATTERNS = [
-  /```\w*:([^\n`]+)/g,
-  /`([^`\s]+\.\w{1,6})`/g,
-  /["']([^"'\s]+\.\w{1,6})["']/g,
-  /(?:Read|List)\s+`?([^\s`\n]+\.\w{1,6})`?/gi,
-];
-const WRITE_PATTERN = /(?:Create|Created|Modify|Modified|Update|Updated|Write|Wrote|Edit|Edited|Delete|Deleted)\s+`?([^\s`\n]+\.\w{1,6})`?/gi;
+const KNOWN_EXTENSIONLESS_FILENAMES = new Set([
+  ".dockerignore",
+  ".env",
+  ".eslintignore",
+  ".eslintrc",
+  ".gitattributes",
+  ".gitignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierignore",
+  ".prettierrc",
+  "brewfile",
+  "build",
+  "caddyfile",
+  "containerfile",
+  "copying",
+  "dockerfile",
+  "earthfile",
+  "gemfile",
+  "jenkinsfile",
+  "justfile",
+  "license",
+  "makefile",
+  "procfile",
+  "rakefile",
+  "readme",
+  "taskfile",
+  "tiltfile",
+  "vagrantfile",
+  "workspace",
+]);
+const DOMAIN_TLDS = new Set([
+  "app",
+  "au",
+  "com",
+  "dev",
+  "io",
+  "net",
+  "org",
+]);
 
 function basenameAny(value) {
   return String(value || "")
@@ -122,22 +157,88 @@ function isWindowsAbsolutePath(filePath) {
   return WINDOWS_ABSOLUTE_PATH_PATTERN.test(filePath);
 }
 
+function cleanupExtractedPath(filePath) {
+  let cleaned = String(filePath || "").trim();
+
+  const markdownLink = cleaned.match(/^\[[^\]\n]+\]\(([^)]+)\)$/);
+  if (markdownLink) {
+    cleaned = markdownLink[1].trim();
+  }
+
+  if (cleaned.startsWith("<") && cleaned.endsWith(">")) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  return cleaned
+    .replace(/:\d+(?::\d+)?$/, "")
+    .replace(/[),.;]+$/, "");
+}
+
+function isLikelyNonFileToken(filePath) {
+  const cleaned = String(filePath || "").trim();
+  const pathSegments = cleaned.split(/[\\/]/);
+  const basename = pathSegments[pathSegments.length - 1] || "";
+  const extension = path.extname(cleaned).slice(1).toLowerCase();
+
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleaned)) {
+    return true;
+  }
+
+  if (cleaned === "process.env" || cleaned.startsWith("process.env.")) {
+    return true;
+  }
+
+  if (/^(?:v)?\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?$/.test(cleaned)) {
+    return true;
+  }
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(cleaned)) {
+    return true;
+  }
+
+  if (/^@?[^/\s]+@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(cleaned)
+    || /[/\\][^/\\\s]+@\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(cleaned)) {
+    return true;
+  }
+
+  if (!/[\\/]/.test(cleaned) && cleaned.split(".").length > 2 && DOMAIN_TLDS.has(extension)) {
+    return true;
+  }
+
+  if (basename.includes("@") && /\d+\.\d+\.\d+/.test(basename)) {
+    return true;
+  }
+
+  return false;
+}
+
 function isValidFilePath(filePath) {
-  if (!filePath || filePath.length === 0) {
+  const cleaned = cleanupExtractedPath(filePath);
+
+  if (!cleaned || cleaned.length === 0) {
     return false;
   }
 
-  if (filePath.startsWith("http://") || filePath.startsWith("https://") || filePath.includes("://")) {
+  if (cleaned.startsWith("http://") || cleaned.startsWith("https://") || cleaned.includes("://")) {
     return false;
   }
 
-  if (/[<>|?*]/.test(filePath)) {
+  if (/[<>"'`|?*\[\]]/.test(cleaned)) {
     return false;
   }
 
-  const ext = path.extname(filePath).slice(1).toLowerCase();
+  if (isLikelyNonFileToken(cleaned)) {
+    return false;
+  }
 
-  if (!ext || ext.length > 6) {
+  const ext = path.extname(cleaned).slice(1).toLowerCase();
+  const basename = basenameAny(cleaned).toLowerCase();
+
+  if (!ext && !/[\\/]/.test(cleaned) && !KNOWN_EXTENSIONLESS_FILENAMES.has(basename)) {
+    return false;
+  }
+
+  if (ext && (ext.length > 6 || /^\d+$/.test(ext))) {
     return false;
   }
 
@@ -145,7 +246,7 @@ function isValidFilePath(filePath) {
 }
 
 function normalizePath(filePath, cwd) {
-  const cleaned = filePath.trim();
+  const cleaned = cleanupExtractedPath(filePath);
 
   if (isWindowsAbsolutePath(cleaned) && process.platform !== "win32") {
     return path.normalize(cleaned);
@@ -196,43 +297,137 @@ function filterTrackableFiles(files, cwd, logger = () => {}) {
   });
 }
 
-function extractFiles(message, cwd) {
-  if (!message || message.length === 0) {
+function extractEditedFilesFromPatch(patchText, cwd) {
+  if (!patchText || typeof patchText !== "string") {
     return [];
   }
 
   const fileMap = new Map();
-  WRITE_PATTERN.lastIndex = 0;
+  const fileHeaderPattern = /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm;
 
-  for (const match of message.matchAll(WRITE_PATTERN)) {
+  for (const match of patchText.matchAll(fileHeaderPattern)) {
     const filePath = match[1];
 
     if (filePath && isValidFilePath(filePath)) {
-      const normalized = normalizePath(filePath, cwd);
-      fileMap.set(normalized, true);
+      fileMap.set(normalizePath(filePath, cwd), true);
     }
   }
 
-  for (const pattern of READ_PATTERNS) {
-    pattern.lastIndex = 0;
-
-    for (const match of message.matchAll(pattern)) {
-      const filePath = match[1];
-
-      if (filePath && isValidFilePath(filePath)) {
-        const normalized = normalizePath(filePath, cwd);
-
-        if (!fileMap.has(normalized)) {
-          fileMap.set(normalized, false);
-        }
-      }
-    }
-  }
-
-  return Array.from(fileMap.entries()).map(([filePath, isWrite]) => ({
+  return Array.from(fileMap.keys()).map((filePath) => ({
     path: filePath,
-    isWrite,
+    isWrite: true,
   }));
+}
+
+function getToolInputText(toolInput) {
+  if (typeof toolInput === "string") {
+    return toolInput;
+  }
+
+  if (!toolInput || typeof toolInput !== "object") {
+    return "";
+  }
+
+  return [
+    toolInput.command,
+    toolInput.patch,
+    toolInput.input,
+  ].find((value) => typeof value === "string") || "";
+}
+
+function extractEditedFilesFromHookPayload(payload, cwd) {
+  if (!payload || payload.hook_event_name !== "PostToolUse") {
+    return [];
+  }
+
+  const toolName = String(payload.tool_name || "");
+
+  if (!/(?:^|_)apply_patch$|^Edit$|^Write$/i.test(toolName)) {
+    return [];
+  }
+
+  return extractEditedFilesFromPatch(getToolInputText(payload.tool_input), cwd);
+}
+
+function getTurnStateKey(payload) {
+  if (!payload?.session_id || !payload?.turn_id) {
+    return null;
+  }
+
+  return `${payload.session_id}:${payload.turn_id}`;
+}
+
+function mergeFiles(existingFiles, newFiles) {
+  const fileMap = new Map();
+
+  for (const file of [...existingFiles, ...newFiles]) {
+    if (file?.path) {
+      fileMap.set(file.path, {
+        path: file.path,
+        isWrite: Boolean(file.isWrite),
+      });
+    }
+  }
+
+  return Array.from(fileMap.values());
+}
+
+function rememberTurnFiles(payload, files) {
+  const turnKey = getTurnStateKey(payload);
+
+  if (!turnKey || files.length === 0) {
+    return;
+  }
+
+  const state = readState();
+  const turnFiles = state.turnFiles && typeof state.turnFiles === "object" ? state.turnFiles : {};
+  const existing = Array.isArray(turnFiles[turnKey]?.files) ? turnFiles[turnKey].files : [];
+
+  turnFiles[turnKey] = {
+    updatedAt: Math.floor(Date.now() / 1000),
+    files: mergeFiles(existing, files),
+  };
+
+  const pruned = Object.fromEntries(Object.entries(turnFiles)
+    .sort(([, left], [, right]) => (right.updatedAt || 0) - (left.updatedAt || 0))
+    .slice(0, MAX_TRACKED_TURNS));
+
+  writeState({
+    ...state,
+    turnFiles: pruned,
+  });
+}
+
+function readTurnFiles(payload) {
+  const turnKey = getTurnStateKey(payload);
+
+  if (!turnKey) {
+    return [];
+  }
+
+  const files = readState().turnFiles?.[turnKey]?.files;
+  return Array.isArray(files) ? files : [];
+}
+
+function clearTurnFiles(payload) {
+  const turnKey = getTurnStateKey(payload);
+
+  if (!turnKey) {
+    return;
+  }
+
+  const state = readState();
+
+  if (!state.turnFiles?.[turnKey]) {
+    return;
+  }
+
+  const turnFiles = { ...state.turnFiles };
+  delete turnFiles[turnKey];
+  writeState({
+    ...state,
+    turnFiles,
+  });
 }
 
 function ensureDir(dirPath) {
@@ -493,6 +688,10 @@ function writeContinue(systemMessage) {
   process.stdout.write(JSON.stringify(payload));
 }
 
+function writeOk() {
+  process.stdout.write("{}");
+}
+
 function readState() {
   const { stateFile } = getPaths();
 
@@ -532,6 +731,7 @@ function shouldSendHeartbeat(signature, force = false) {
 
 function updateLastHeartbeat(signature) {
   writeState({
+    ...readState(),
     lastHeartbeatAt: Math.floor(Date.now() / 1000),
     lastSignature: signature,
   });
@@ -637,13 +837,22 @@ function sendProjectHeartbeat(cwd) {
   });
 }
 
+function limitFilesForHeartbeats(files) {
+  return files.slice(0, MAX_FILE_HEARTBEATS_PER_HOOK);
+}
+
 function sendFileHeartbeats(files, cwd) {
   const paths = getPaths();
   const projectRoot = resolveProjectRoot(cwd);
   const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
+  const filesToSend = limitFilesForHeartbeats(files);
   let sentCount = 0;
 
-  for (const file of files) {
+  if (files.length > filesToSend.length) {
+    logDebug(`limiting file heartbeats sent=${filesToSend.length} extracted=${files.length}`);
+  }
+
+  for (const file of filesToSend) {
     const heartbeatPath = toHeartbeatPath(file.path, paths);
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`);
     const result = sendHeartbeat({
@@ -672,17 +881,22 @@ function buildSignature(files, cwd) {
     .join("|");
 }
 
-function buildHookEntry(paths = getPaths()) {
+function buildHookEntry(paths = getPaths(), options = {}) {
   const quotedBinPath = paths.runtime === "windows"
     ? quoteWindowsShellArg(BIN_PATH)
     : quotePosixShellArg(BIN_PATH);
 
-  return {
+  const entry = {
     type: "command",
     command: `node ${quotedBinPath} hook`,
     timeout: 30,
-    statusMessage: "Sending WakaTime heartbeat",
   };
+
+  if (options.statusMessage !== false) {
+    entry.statusMessage = options.statusMessage || "Sending WakaTime heartbeat";
+  }
+
+  return entry;
 }
 
 function isOurHookEntry(entry) {
@@ -691,6 +905,13 @@ function isOurHookEntry(entry) {
     && typeof entry.command === "string"
     && entry.command.includes(HOOK_COMMAND_MARKER)
     && /\bhook\b/.test(entry.command);
+}
+
+function removeOurHookEntries(groups = []) {
+  return groups.map((group) => {
+    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((entry) => !isOurHookEntry(entry)) : [];
+    return { ...group, hooks };
+  }).filter((group) => group.hooks.length > 0);
 }
 
 function parseOptions(args) {
@@ -775,23 +996,37 @@ async function runHook() {
     return;
   }
 
-  const lastAssistantMessage = payload.last_assistant_message;
+  const cwd = payload.cwd || process.cwd();
 
-  if (!lastAssistantMessage || !String(lastAssistantMessage).trim()) {
-    logDebug("skipped empty assistant message");
-    writeContinue();
+  if (payload.hook_event_name === "PostToolUse") {
+    const files = filterTrackableFiles(extractEditedFilesFromHookPayload(payload, cwd), cwd, logDebug);
+
+    if (files.length > 0) {
+      rememberTurnFiles(payload, files);
+    }
+
+    logDebug(`post tool use tool=${payload.tool_name || ""} recorded files=${files.length}`);
+    writeOk();
     return;
   }
 
-  const cwd = payload.cwd || process.cwd();
+  if (payload.hook_event_name && payload.hook_event_name !== "Stop") {
+    logDebug(`skipped unsupported hook event=${payload.hook_event_name}`);
+    writeOk();
+    return;
+  }
+
+  const rememberedFiles = readTurnFiles(payload);
+
   const projectRoot = resolveProjectRoot(cwd);
-  const files = filterTrackableFiles(extractFiles(lastAssistantMessage, cwd), cwd, logDebug);
-  logDebug(`project root=${projectRoot} extracted files=${files.length}`);
+  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug);
+  logDebug(`project root=${projectRoot} tracked edited files=${files.length}`);
 
   const signature = buildSignature(files, cwd);
 
   if (!shouldSendHeartbeat(signature)) {
     logDebug("skipped heartbeat due to local rate limit");
+    clearTurnFiles(payload);
     writeContinue();
     return;
   }
@@ -808,6 +1043,7 @@ async function runHook() {
     updateLastHeartbeat(signature);
   }
 
+  clearTurnFiles(payload);
   writeContinue();
 }
 
@@ -822,25 +1058,27 @@ function install(options = {}) {
   const existing = readJsonSafe(codexHooks);
   const config = existing || { hooks: {} };
   const stopHooks = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : [];
+  const postToolUseHooks = Array.isArray(config.hooks?.PostToolUse) ? config.hooks.PostToolUse : [];
 
   if (existing) {
     fs.writeFileSync(`${codexHooks}.bak`, `${JSON.stringify(existing, null, 2)}\n`);
   }
 
-  const normalized = stopHooks.map((group) => {
-    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((entry) => !isOurHookEntry(entry)) : [];
-    return { ...group, hooks };
-  }).filter((group) => group.hooks.length > 0);
+  const normalizedStopHooks = removeOurHookEntries(stopHooks);
+  normalizedStopHooks.push({ hooks: [buildHookEntry(paths)] });
 
-  if (normalized.length === 0) {
-    normalized.push({ hooks: [buildHookEntry(paths)] });
-  } else {
-    normalized[0].hooks.push(buildHookEntry(paths));
-  }
+  const normalizedPostToolUseHooks = removeOurHookEntries(postToolUseHooks);
+  normalizedPostToolUseHooks.push({
+    matcher: "apply_patch|Edit|Write",
+    hooks: [buildHookEntry(paths, {
+      statusMessage: "Tracking edited files",
+    })],
+  });
 
   config.hooks = {
     ...(config.hooks || {}),
-    Stop: normalized,
+    PostToolUse: normalizedPostToolUseHooks,
+    Stop: normalizedStopHooks,
   };
 
   writeJson(codexHooks, config);
@@ -851,22 +1089,21 @@ function uninstall(options = {}) {
   const { codexHooks } = getPaths(options);
   const existing = readJsonSafe(codexHooks);
 
-  if (!existing?.hooks?.Stop) {
+  if (!existing?.hooks?.Stop && !existing?.hooks?.PostToolUse) {
     console.log("No Codex hook config found.");
     return;
   }
 
-  const normalized = existing.hooks.Stop.map((group) => {
-    const hooks = Array.isArray(group?.hooks) ? group.hooks.filter((entry) => !isOurHookEntry(entry)) : [];
-    return { ...group, hooks };
-  }).filter((group) => group.hooks.length > 0);
-
   const nextHooks = { ...(existing.hooks || {}) };
 
-  if (normalized.length > 0) {
-    nextHooks.Stop = normalized;
-  } else {
-    delete nextHooks.Stop;
+  for (const eventName of ["PostToolUse", "Stop"]) {
+    const normalized = removeOurHookEntries(Array.isArray(nextHooks[eventName]) ? nextHooks[eventName] : []);
+
+    if (normalized.length > 0) {
+      nextHooks[eventName] = normalized;
+    } else {
+      delete nextHooks[eventName];
+    }
   }
 
   const nextConfig = { ...existing, hooks: nextHooks };
@@ -964,5 +1201,8 @@ module.exports = {
   isOurHookEntry,
   buildPluginString,
   parseOptions,
+  extractEditedFilesFromPatch,
+  extractEditedFilesFromHookPayload,
+  limitFilesForHeartbeats,
   filterTrackableFiles,
 };
