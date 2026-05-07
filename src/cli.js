@@ -976,6 +976,15 @@ function validateSetup(paths) {
   }
 }
 
+function warnOnInvalidSetup(paths) {
+  try {
+    validateSetup(paths);
+  } catch (error) {
+    console.warn(`Warning: ${error.message}`);
+    console.warn("Installed hooks anyway. Run `codex-app-wakatime doctor` for setup details.");
+  }
+}
+
 function getSetupChecks(paths) {
   return {
     codexHooksExists: fs.existsSync(paths.codexHooks),
@@ -1060,7 +1069,7 @@ function install(options = {}) {
   const { codexHooks } = paths;
 
   if (!options.skipChecks) {
-    validateSetup(paths);
+    warnOnInvalidSetup(paths);
   }
 
   const existing = readJsonSafe(codexHooks);
@@ -1205,6 +1214,8 @@ module.exports = {
   resolveRuntimePaths,
   toHeartbeatPath,
   validateSetup,
+  warnOnInvalidSetup,
+  install,
   buildHookEntry,
   isOurHookEntry,
   buildPluginString,

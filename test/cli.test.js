@@ -148,6 +148,37 @@ test("parseOptions keeps positional arguments separate from option flags", () =>
   assert.deepEqual(options.rest, ["/tmp/project"]);
 });
 
+test("install writes hooks even when setup validation warns", () => {
+  const home = path.join(os.tmpdir(), "codex-wakatime-install-warning-home");
+  const codexHooks = path.join(home, ".codex", "hooks.json");
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const warnings = [];
+
+  console.log = () => {};
+  console.warn = (message) => warnings.push(message);
+
+  try {
+    cli.install({
+      homeDir: home,
+      codexHooks,
+      wakatimeCli: path.join(home, ".wakatime", "missing-cli"),
+      wakatimeConfig: path.join(home, ".wakatime.cfg"),
+      platform: "darwin",
+    });
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+  }
+
+  const hooks = JSON.parse(fs.readFileSync(codexHooks, "utf8")).hooks;
+
+  assert.match(warnings.join("\n"), /Setup check failed/);
+  assert.equal(hooks.Stop.length, 1);
+  assert.equal(hooks.PostToolUse.length, 1);
+  assert.equal(cli.isOurHookEntry(hooks.Stop[0].hooks[0]), true);
+});
+
 test("buildPluginString uses the WakaTime Codex identity", () => {
   assert.equal(cli.buildPluginString(), `codex/1.0.0 codex-wakatime/${packageJson.version}`);
 });
