@@ -41,6 +41,10 @@ test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to U
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
+test("wsl setup checks read Windows config through the mounted host path", () => {
+  assert.equal(cli.toReadableHostPath("C:\\Users\\User\\.wakatime.cfg"), "/mnt/c/Users/User/.wakatime.cfg");
+});
+
 test("wsl runtime accepts WAKATIME_CLI_PATH override", () => {
   const previous = process.env.WAKATIME_CLI_PATH;
   process.env.WAKATIME_CLI_PATH = "/custom/wakatime-cli";

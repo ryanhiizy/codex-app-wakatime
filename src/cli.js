@@ -476,6 +476,14 @@ function toWindowsWslPath(windowsPath) {
   return windowsPath.replace(/^([A-Za-z]):\\/, (_, drive) => `/mnt/${drive.toLowerCase()}/`).replace(/\\/g, "/");
 }
 
+function toReadableHostPath(filePath) {
+  if (process.platform !== "win32" && isWindowsAbsolutePath(filePath)) {
+    return toWindowsWslPath(filePath);
+  }
+
+  return filePath;
+}
+
 function findWindowsUserDir() {
   const explicitWindowsHome = process.env.WAKATIME_WINDOWS_HOME || process.env.USERPROFILE;
 
@@ -959,7 +967,7 @@ function validateSetup(paths) {
     failures.push(`missing WakaTime CLI: ${paths.wakatimeCli}`);
   }
 
-  if (!fs.existsSync(paths.wakatimeConfig)) {
+  if (!fs.existsSync(toReadableHostPath(paths.wakatimeConfig))) {
     failures.push(`missing WakaTime config: ${paths.wakatimeConfig}`);
   }
 
@@ -972,7 +980,7 @@ function getSetupChecks(paths) {
   return {
     codexHooksExists: fs.existsSync(paths.codexHooks),
     wakatimeCliExists: commandOrFileExists(paths.wakatimeCli),
-    wakatimeConfigExists: fs.existsSync(paths.wakatimeConfig),
+    wakatimeConfigExists: fs.existsSync(toReadableHostPath(paths.wakatimeConfig)),
   };
 }
 
@@ -1201,6 +1209,7 @@ module.exports = {
   isOurHookEntry,
   buildPluginString,
   parseOptions,
+  toReadableHostPath,
   extractEditedFilesFromPatch,
   extractEditedFilesFromHookPayload,
   limitFilesForHeartbeats,
