@@ -82,35 +82,56 @@ function hasGitMarker(dirPath) {
   return fs.existsSync(path.join(dirPath, ".git"));
 }
 
-function isCodexScratchWorkspace(startPath) {
-  const codexDocumentsDir = path.join(os.homedir(), "Documents", "Codex");
-  const resolvedPath = path.resolve(startPath || process.cwd());
-
-  return resolvedPath === codexDocumentsDir || resolvedPath.startsWith(`${codexDocumentsDir}${path.sep}`);
-}
-
-function resolveProjectRootRaw(startPath) {
+function getStartDirectory(startPath) {
   if (!startPath) {
     return process.cwd();
   }
 
-  let currentPath = path.resolve(startPath);
+  const resolvedPath = path.resolve(startPath);
 
-  if (!fs.existsSync(currentPath)) {
-    currentPath = path.dirname(currentPath);
-  } else if (!fs.statSync(currentPath).isDirectory()) {
-    currentPath = path.dirname(currentPath);
+  if (!fs.existsSync(resolvedPath)) {
+    return path.dirname(resolvedPath);
   }
+
+  return fs.statSync(resolvedPath).isDirectory() ? resolvedPath : path.dirname(resolvedPath);
+}
+
+function findGitRoot(startPath, stopAt) {
+  let currentPath = getStartDirectory(startPath);
+  const stopPath = stopAt ? path.resolve(stopAt) : null;
 
   while (currentPath) {
     if (hasGitMarker(currentPath)) {
       return currentPath;
     }
 
+    if (stopPath && currentPath === stopPath) {
+      return null;
+    }
+
     currentPath = getParentDir(currentPath);
   }
 
-  return path.resolve(startPath);
+  return null;
+}
+
+function getCodexScratchRoot(startPath) {
+  const codexDocumentsDir = path.join(os.homedir(), "Documents", "Codex");
+  const resolvedPath = path.resolve(startPath || process.cwd());
+
+  if (resolvedPath === codexDocumentsDir || resolvedPath.startsWith(`${codexDocumentsDir}${path.sep}`)) {
+    return codexDocumentsDir;
+  }
+
+  return null;
+}
+
+function isCodexScratchWorkspace(startPath) {
+  return Boolean(getCodexScratchRoot(startPath));
+}
+
+function resolveProjectRootRaw(startPath) {
+  return findGitRoot(startPath) || path.resolve(startPath || process.cwd());
 }
 
 function getPrimaryWorktreeRoot(projectRoot) {
@@ -1286,8 +1307,10 @@ async function runHook(options = {}) {
   const state = readState();
   const rememberedFiles = readTurnFiles(payload, state);
 
-  const rawProjectRoot = resolveProjectRootRaw(cwd);
-  const isScratchWorkspace = isCodexScratchWorkspace(cwd) && !hasGitMarker(rawProjectRoot);
+  const scratchRoot = getCodexScratchRoot(cwd);
+  const scratchGitRoot = scratchRoot ? findGitRoot(cwd, scratchRoot) : null;
+  const isScratchWorkspace = Boolean(scratchRoot && !scratchGitRoot);
+  const rawProjectRoot = isScratchWorkspace ? path.resolve(cwd) : (scratchGitRoot || resolveProjectRootRaw(cwd));
 
   const projectRoot = isScratchWorkspace ? rawProjectRoot : getPrimaryWorktreeRoot(rawProjectRoot);
   const files = isScratchWorkspace ? [] : filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
@@ -1490,4 +1513,5 @@ module.exports = {
   limitFilesForHeartbeats,
   filterTrackableFiles,
   isCodexScratchWorkspace,
+  getCodexScratchRoot,
 };
