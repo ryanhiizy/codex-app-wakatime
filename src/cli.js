@@ -518,7 +518,7 @@ function readTurnFiles(payload, state = readState()) {
   );
 }
 
-function clearTurnFiles(payload) {
+function clearTurnFiles(payload, state = readState()) {
   const turnKey = getTurnStateKey(payload);
 
   if (!turnKey) {
@@ -526,8 +526,6 @@ function clearTurnFiles(payload) {
   }
 
   clearQueuedTurnFiles(turnKey);
-
-  const state = readState();
 
   if (!state.turnFiles?.[turnKey]) {
     return;
@@ -1305,7 +1303,6 @@ async function runHook(options = {}) {
   }
 
   const state = readState();
-  const rememberedFiles = readTurnFiles(payload, state);
 
   const scratchRoot = getCodexScratchRoot(cwd);
   const scratchGitRoot = scratchRoot ? findGitRoot(cwd, scratchRoot) : null;
@@ -1313,6 +1310,7 @@ async function runHook(options = {}) {
   const rawProjectRoot = isScratchWorkspace ? path.resolve(cwd) : (scratchGitRoot || resolveProjectRootRaw(cwd));
 
   const projectRoot = isScratchWorkspace ? rawProjectRoot : getPrimaryWorktreeRoot(rawProjectRoot);
+  const rememberedFiles = isScratchWorkspace ? [] : readTurnFiles(payload, state);
   const files = isScratchWorkspace ? [] : filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
   logDebug(`project root=${projectRoot} tracked edited files=${files.length}${isScratchWorkspace ? " scratch=true" : ""}`);
 
@@ -1320,7 +1318,7 @@ async function runHook(options = {}) {
 
   if (!shouldSendHeartbeat(signature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit");
-    clearTurnFiles(payload);
+    clearTurnFiles(payload, state);
     writeContinue();
     return;
   }
@@ -1339,7 +1337,7 @@ async function runHook(options = {}) {
     updateLastHeartbeat(signature, state);
   }
 
-  clearTurnFiles(payload);
+  clearTurnFiles(payload, state);
   writeContinue();
 }
 
