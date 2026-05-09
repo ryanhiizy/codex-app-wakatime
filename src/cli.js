@@ -82,56 +82,28 @@ function hasGitMarker(dirPath) {
   return fs.existsSync(path.join(dirPath, ".git"));
 }
 
-function getStartDirectory(startPath) {
+function resolveProjectRootRaw(startPath) {
   if (!startPath) {
     return process.cwd();
   }
 
-  const resolvedPath = path.resolve(startPath);
+  let currentPath = path.resolve(startPath);
 
-  if (!fs.existsSync(resolvedPath)) {
-    return path.dirname(resolvedPath);
+  if (!fs.existsSync(currentPath)) {
+    currentPath = path.dirname(currentPath);
+  } else if (!fs.statSync(currentPath).isDirectory()) {
+    currentPath = path.dirname(currentPath);
   }
-
-  return fs.statSync(resolvedPath).isDirectory() ? resolvedPath : path.dirname(resolvedPath);
-}
-
-function findGitRoot(startPath, stopAt) {
-  let currentPath = getStartDirectory(startPath);
-  const stopPath = stopAt ? path.resolve(stopAt) : null;
 
   while (currentPath) {
     if (hasGitMarker(currentPath)) {
       return currentPath;
     }
 
-    if (stopPath && currentPath === stopPath) {
-      return null;
-    }
-
     currentPath = getParentDir(currentPath);
   }
 
-  return null;
-}
-
-function getCodexScratchRoot(startPath) {
-  const codexDocumentsDir = path.join(os.homedir(), "Documents", "Codex");
-  const resolvedPath = path.resolve(startPath || process.cwd());
-
-  if (resolvedPath === codexDocumentsDir || resolvedPath.startsWith(`${codexDocumentsDir}${path.sep}`)) {
-    return codexDocumentsDir;
-  }
-
-  return null;
-}
-
-function isCodexScratchWorkspace(startPath) {
-  return Boolean(getCodexScratchRoot(startPath));
-}
-
-function resolveProjectRootRaw(startPath) {
-  return findGitRoot(startPath) || path.resolve(startPath || process.cwd());
+  return path.resolve(startPath);
 }
 
 function getPrimaryWorktreeRoot(projectRoot) {
@@ -1037,7 +1009,6 @@ function sendHeartbeat(params) {
 
   const result = spawnSync(launch.command, [...launch.argsPrefix, ...args], {
     encoding: "utf8",
-    cwd: params.cwd,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -1062,14 +1033,6 @@ function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd)) {
     entity: "Codex",
     entityType: "app",
     project,
-  });
-}
-
-function sendUnattributedAppHeartbeat() {
-  return sendHeartbeat({
-    entity: "Codex",
-    entityType: "app",
-    cwd: path.parse(os.homedir()).root,
   });
 }
 
@@ -1305,16 +1268,12 @@ async function runHook(options = {}) {
   }
 
   const state = readState();
+  const rememberedFiles = readTurnFiles(payload, state);
 
-  const scratchRoot = getCodexScratchRoot(cwd);
-  const scratchGitRoot = scratchRoot ? findGitRoot(cwd, scratchRoot) : null;
-  const isScratchWorkspace = Boolean(scratchRoot && !scratchGitRoot);
-  const rawProjectRoot = isScratchWorkspace ? path.resolve(cwd) : (scratchGitRoot || resolveProjectRootRaw(cwd));
-
-  const projectRoot = isScratchWorkspace ? rawProjectRoot : getPrimaryWorktreeRoot(rawProjectRoot);
-  const rememberedFiles = isScratchWorkspace ? [] : readTurnFiles(payload, state);
-  const files = isScratchWorkspace ? [] : filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
-  logDebug(`project root=${projectRoot} tracked edited files=${files.length}${isScratchWorkspace ? " scratch=true" : ""}`);
+  const rawProjectRoot = resolveProjectRootRaw(cwd);
+  const projectRoot = getPrimaryWorktreeRoot(rawProjectRoot);
+  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
+  logDebug(`project root=${projectRoot} tracked edited files=${files.length}`);
 
   const signature = buildSignature(files, cwd);
 
@@ -1329,8 +1288,6 @@ async function runHook(options = {}) {
 
   if (files.length > 0) {
     sent = sendFileHeartbeats(files, cwd, projectRoot);
-  } else if (isScratchWorkspace) {
-    sent = sendUnattributedAppHeartbeat().ok;
   } else {
     sent = sendProjectHeartbeat(cwd, projectRoot).ok;
   }
@@ -1512,6 +1469,4 @@ module.exports = {
   extractEditedFilesFromHookPayload,
   limitFilesForHeartbeats,
   filterTrackableFiles,
-  isCodexScratchWorkspace,
-  getCodexScratchRoot,
 };

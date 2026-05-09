@@ -255,20 +255,6 @@ test("filterTrackableFiles keeps only existing files inside the project", () => 
   ]);
 });
 
-test("isCodexScratchWorkspace detects chats under Documents/Codex", () => {
-  const scratchRoot = path.join(os.homedir(), "Documents", "Codex");
-
-  assert.equal(
-    cli.getCodexScratchRoot(path.join(scratchRoot, "2026-05-09", "scratch-chat")),
-    scratchRoot,
-  );
-  assert.equal(
-    cli.isCodexScratchWorkspace(path.join(os.homedir(), "Documents", "Codex", "2026-05-09", "scratch-chat")),
-    true,
-  );
-  assert.equal(cli.isCodexScratchWorkspace(path.join(os.tmpdir(), "codex-wakatime-scratch-chat")), false);
-});
-
 test("extractEditedFilesFromPatch reads apply_patch file headers", () => {
   const cwd = path.join(os.tmpdir(), "codex-wakatime-patch-project");
   const addedFile = path.join(cwd, "src", "added.ts");
