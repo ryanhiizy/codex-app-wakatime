@@ -27,9 +27,11 @@ test("macos runtime uses native Codex and WakaTime paths", () => {
 });
 
 test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to UNC", () => {
+  const home = path.join(os.tmpdir(), "codex-wakatime-wsl-home");
   const paths = cli.resolveRuntimePaths({
     platform: "linux",
     isWsl: true,
+    homeDir: home,
     windowsHome: {
       win: "C:\\Users\\User",
       wsl: "/mnt/c/Users/User",
@@ -41,6 +43,7 @@ test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to U
   assert.equal(paths.codexHooks, "/mnt/c/Users/User/.codex/hooks.json");
   assert.equal(paths.wakatimeCli, "/mnt/c/Users/User/.wakatime/wakatime-cli-windows-amd64.exe");
   assert.equal(paths.wakatimeConfig, "C:\\Users\\User\\.wakatime.cfg");
+  assert.equal(paths.turnFilesDir, path.join(home, ".wakatime", "codex-app-wakatime-turns"));
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
@@ -213,6 +216,7 @@ test("install writes hooks even when setup validation warns", () => {
   assert.equal(hooks.PostToolUse.length, 1);
   assert.equal(cli.isOurHookEntry(hooks.Stop[0].hooks[0]), true);
   assert.match(command, /--state-file/);
+  assert.match(command, /--turn-files-dir/);
   assert.match(command, /--config-file/);
   assert.match(command, /--codex-log/);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {

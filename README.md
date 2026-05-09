@@ -73,7 +73,7 @@ Windows Codex working on a WSL project:
 | `/mnt/c/Users/<user>/.codex/codex-app-wakatime.log` | Hook debug log, only written when debug logging is enabled. |
 | `~/.wakatime/codex-app-wakatime.config.json` | Package config for debug logging and performance options. |
 | `/mnt/c/Users/<user>/.wakatime/codex-app-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
-| `/mnt/c/Users/<user>/.wakatime/codex-app-wakatime-turns/*.jsonl` | Temporary per-turn edited-file queues used to keep edit hooks lightweight. |
+| `~/.wakatime/codex-app-wakatime-turns/*.jsonl` | Temporary per-turn edited-file queues used to keep edit hooks lightweight without writing through `/mnt/c` on every edit. |
 
 ## Config
 
@@ -93,8 +93,9 @@ Set `"debug": true` to write hook debug logs. Keep it off for the lowest hook ov
 
 Hooks are optimized for low overhead:
 
-- `PostToolUse` only records candidate edited paths to a small per-turn queue.
+- `PostToolUse` only parses the hook payload and records candidate edited paths to a small local per-turn queue.
 - `Stop` does the filesystem checks and sends the WakaTime heartbeat.
+- Config reads, debug logging, filesystem checks, Git worktree lookup, and WakaTime CLI execution are kept off the `PostToolUse` hot path.
 - Debug logging is disabled by default.
 - Up to 20 file heartbeats are sent per completed turn by default.
 

@@ -387,11 +387,11 @@ function mergeFiles(existingFiles, newFiles) {
 
 function getTurnFilesPath(turnKey) {
   const encodedKey = Buffer.from(turnKey).toString("base64url");
-  return path.join(path.dirname(getStateFilePath()), "codex-app-wakatime-turns", `${encodedKey}.jsonl`);
+  return path.join(getTurnFilesDirPath(), `${encodedKey}.jsonl`);
 }
 
 function getTurnFilesDir() {
-  return path.dirname(getTurnFilesPath("turns"));
+  return getTurnFilesDirPath();
 }
 
 function pruneQueuedTurnFiles() {
@@ -751,6 +751,7 @@ function resolveRuntimePaths(options = {}) {
       configFile: options.configFile || path.join(homeDir, ".wakatime", CONFIG_FILE_NAME),
       wakatimeLog: options.wakatimeLog || path.join(homeDir, ".wakatime", "wakatime.log"),
       stateFile: options.stateFile || path.join(homeDir, ".wakatime", "codex-app-wakatime.json"),
+      turnFilesDir: options.turnFilesDir || path.join(homeDir, ".wakatime", "codex-app-wakatime-turns"),
       codexHooks: options.codexHooks || path.join(homeDir, ".codex", "hooks.json"),
       codexLog: options.codexLog || path.join(homeDir, ".codex", "codex-app-wakatime.log"),
     };
@@ -789,6 +790,9 @@ function resolveRuntimePaths(options = {}) {
     stateFile: options.stateFile || (isWindowsRuntime
       ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime.json")
       : path.posix.join(windowsHome.wsl, ".wakatime", "codex-app-wakatime.json")),
+    turnFilesDir: options.turnFilesDir || (isWindowsRuntime
+      ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime-turns")
+      : path.posix.join(homeDir, ".wakatime", "codex-app-wakatime-turns")),
     codexHooks: options.codexHooks || codexHooks,
     codexLog: options.codexLog || codexLog,
   };
@@ -821,6 +825,18 @@ function getStateFilePath(options = {}) {
   }
 
   return getPaths(options).stateFile;
+}
+
+function getTurnFilesDirPath(options = {}) {
+  if (options.turnFilesDir) {
+    return options.turnFilesDir;
+  }
+
+  if (activeOptions.turnFilesDir) {
+    return activeOptions.turnFilesDir;
+  }
+
+  return getPaths(options).turnFilesDir || path.join(path.dirname(getStateFilePath(options)), "codex-app-wakatime-turns");
 }
 
 function readConfig(options = {}) {
@@ -1083,6 +1099,7 @@ function buildHookEntry(paths = getPaths(), options = {}) {
 
   for (const [flag, value] of [
     ["--state-file", paths.stateFile],
+    ["--turn-files-dir", paths.turnFilesDir],
     ["--config-file", paths.configFile],
     ["--codex-log", paths.codexLog],
   ]) {
@@ -1154,6 +1171,11 @@ function parseOptions(args) {
       index += 1;
     } else if (arg.startsWith("--state-file=")) {
       options.stateFile = arg.slice("--state-file=".length);
+    } else if (arg === "--turn-files-dir") {
+      options.turnFilesDir = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--turn-files-dir=")) {
+      options.turnFilesDir = arg.slice("--turn-files-dir=".length);
     } else if (arg === "--config-file") {
       options.configFile = args[index + 1];
       index += 1;
@@ -1208,10 +1230,8 @@ function getSetupChecks(paths) {
 async function runHook(options = {}) {
   activeOptions = options;
   const rawInput = await readStdin();
-  logDebug(`received input bytes=${rawInput.length}`);
 
   if (!rawInput.trim()) {
-    logDebug("skipped empty input");
     writeContinue();
     return;
   }
@@ -1221,27 +1241,28 @@ async function runHook(options = {}) {
   try {
     payload = JSON.parse(rawInput);
   } catch (error) {
-    logDebug(`invalid hook payload=${error.message}`);
     writeContinue();
     return;
   }
 
   const cwd = payload.cwd || process.cwd();
+  const eventName = payload.hook_event_name;
 
-  if (payload.hook_event_name === "PostToolUse") {
+  if (eventName === "PostToolUse") {
     const files = extractEditedFilesFromHookPayload(payload, cwd);
 
     if (files.length > 0) {
       rememberTurnFiles(payload, files);
     }
 
-    logDebug(`post tool use tool=${payload.tool_name || ""} recorded files=${files.length}`);
     writeOk();
     return;
   }
 
-  if (payload.hook_event_name && payload.hook_event_name !== "Stop") {
-    logDebug(`skipped unsupported hook event=${payload.hook_event_name}`);
+  logDebug(`received input bytes=${rawInput.length}`);
+
+  if (eventName && eventName !== "Stop") {
+    logDebug(`skipped unsupported hook event=${eventName}`);
     writeOk();
     return;
   }
@@ -1357,6 +1378,7 @@ function status(options = {}) {
     codexHooks: paths.codexHooks,
     codexLog: paths.codexLog,
     stateFile: paths.stateFile,
+    turnFilesDir: paths.turnFilesDir,
     configFile: paths.configFile,
     config: readConfig({ configFile: paths.configFile }),
     wakatimeCli: paths.wakatimeCli,
@@ -1378,6 +1400,7 @@ function doctor(options = {}) {
     wakatimeCli: paths.wakatimeCli,
     wakatimeConfig: paths.wakatimeConfig,
     configFile: paths.configFile,
+    turnFilesDir: paths.turnFilesDir,
     config: readConfig({ configFile: paths.configFile }),
     wakatimePlugin: buildPluginString(),
     checks,
