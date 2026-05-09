@@ -1037,6 +1037,7 @@ function sendHeartbeat(params) {
 
   const result = spawnSync(launch.command, [...launch.argsPrefix, ...args], {
     encoding: "utf8",
+    cwd: params.cwd,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -1068,6 +1069,7 @@ function sendUnattributedAppHeartbeat() {
   return sendHeartbeat({
     entity: "Codex",
     entityType: "app",
+    cwd: path.parse(os.homedir()).root,
   });
 }
 
