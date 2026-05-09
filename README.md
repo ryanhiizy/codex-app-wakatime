@@ -26,7 +26,7 @@ WakaTime CLI lookup:
 | Environment | CLI path |
 | --- | --- |
 | Windows + WSL | `WAKATIME_CLI_PATH` or `/mnt/c/Users/<user>/.wakatime/wakatime-cli-windows-amd64.exe` |
-| macOS/native Linux | `WAKATIME_CLI_PATH`, `~/.wakatime/wakatime-cli`, `~/.wakatime/wakatime-cli-<platform>-<arch>`, or `wakatime-cli` on `PATH` |
+| macOS/native Linux | `WAKATIME_CLI_PATH`, `wakatime-cli` on `PATH`, Homebrew paths, then `~/.wakatime/wakatime-cli*` fallbacks |
 
 > For Codex installed on Windows but working on a project inside WSL, install and configure WakaTime on Windows. The hook runs from WSL but sends heartbeats through the Windows WakaTime CLI.
 
@@ -60,16 +60,47 @@ macOS/native Linux:
 | File | Purpose |
 | --- | --- |
 | `~/.codex/hooks.json` | Codex hook configuration. |
-| `~/.codex/codex-app-wakatime.log` | Hook debug log. |
+| `~/.codex/codex-app-wakatime.log` | Hook debug log, only written when debug logging is enabled. |
+| `~/.wakatime/codex-app-wakatime.config.json` | Package config for debug logging and performance options. |
 | `~/.wakatime/codex-app-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
+| `~/.wakatime/codex-app-wakatime-turns/*.jsonl` | Temporary per-turn edited-file queues used to keep edit hooks lightweight. |
 
 Windows Codex working on a WSL project:
 
 | File | Purpose |
 | --- | --- |
 | `/mnt/c/Users/<user>/.codex/hooks.json` | Windows Codex hook configuration. |
-| `/mnt/c/Users/<user>/.codex/codex-app-wakatime.log` | Hook debug log. |
+| `/mnt/c/Users/<user>/.codex/codex-app-wakatime.log` | Hook debug log, only written when debug logging is enabled. |
+| `~/.wakatime/codex-app-wakatime.config.json` | Package config for debug logging and performance options. |
 | `/mnt/c/Users/<user>/.wakatime/codex-app-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
+| `/mnt/c/Users/<user>/.wakatime/codex-app-wakatime-turns/*.jsonl` | Temporary per-turn edited-file queues used to keep edit hooks lightweight. |
+
+## Config
+
+Install creates `~/.wakatime/codex-app-wakatime.config.json` with debug logging off by default:
+
+```json
+{
+  "debug": false,
+  "maxFileHeartbeats": 20,
+  "canonicalWorktree": true
+}
+```
+
+Set `"debug": true` to write hook debug logs. Keep it off for the lowest hook overhead.
+
+## Performance
+
+Hooks are optimized for low overhead:
+
+- `PostToolUse` only records candidate edited paths to a small per-turn queue.
+- `Stop` does the filesystem checks and sends the WakaTime heartbeat.
+- Debug logging is disabled by default.
+- Up to 20 file heartbeats are sent per completed turn by default.
+
+To adjust file heartbeats per turn, set `"maxFileHeartbeats"` in the config file.
+
+Git worktree canonicalization remains enabled by default for matching WakaTime paths across linked worktrees.
 
 ## Troubleshooting
 

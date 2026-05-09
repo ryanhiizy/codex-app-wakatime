@@ -153,8 +153,8 @@ test("hook command uses shell quoting for the selected runtime", () => {
   const macCommand = cli.buildHookEntry({ runtime: "macos" }).command;
   const windowsCommand = cli.buildHookEntry({ runtime: "windows" }).command;
 
-  assert.match(macCommand, /^node '.+' hook$/);
-  assert.match(windowsCommand, /^node ".+" hook$/);
+  assert.match(macCommand, /^node '.+' hook/);
+  assert.match(windowsCommand, /^node ".+" hook/);
 });
 
 test("hook matching replaces old installs from different package paths", () => {
@@ -186,6 +186,8 @@ test("install writes hooks even when setup validation warns", () => {
   const originalWarn = console.warn;
   const warnings = [];
 
+  fs.rmSync(home, { recursive: true, force: true });
+
   console.log = () => {};
   console.warn = (message) => warnings.push(message);
 
@@ -203,11 +205,21 @@ test("install writes hooks even when setup validation warns", () => {
   }
 
   const hooks = JSON.parse(fs.readFileSync(codexHooks, "utf8")).hooks;
+  const command = hooks.Stop[0].hooks[0].command;
+  const configFile = path.join(home, ".wakatime", "codex-app-wakatime.config.json");
 
   assert.match(warnings.join("\n"), /Setup check failed/);
   assert.equal(hooks.Stop.length, 1);
   assert.equal(hooks.PostToolUse.length, 1);
   assert.equal(cli.isOurHookEntry(hooks.Stop[0].hooks[0]), true);
+  assert.match(command, /--state-file/);
+  assert.match(command, /--config-file/);
+  assert.match(command, /--codex-log/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {
+    debug: false,
+    maxFileHeartbeats: 20,
+    canonicalWorktree: true,
+  });
 });
 
 test("buildPluginString uses the WakaTime Codex identity", () => {

@@ -9,9 +9,15 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
 const DEFAULT_WAKATIME_PLUGIN = "codex-wakatime";
-const MAX_FILE_HEARTBEATS_PER_HOOK = 20;
+const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 20;
 const MAX_TRACKED_TURNS = 100;
 const HOOK_COMMAND_MARKER = "codex-app-wakatime";
+const DEFAULT_CONFIG = {
+  debug: false,
+  maxFileHeartbeats: DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK,
+  canonicalWorktree: true,
+};
+const CONFIG_FILE_NAME = "codex-app-wakatime.config.json";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
 const KNOWN_EXTENSIONLESS_FILENAMES = new Set([
   ".dockerignore",
@@ -53,6 +59,8 @@ const DOMAIN_TLDS = new Set([
   "net",
   "org",
 ]);
+let cachedConfig;
+let activeOptions = {};
 
 function basenameAny(value) {
   return String(value || "")
@@ -100,6 +108,10 @@ function resolveProjectRootRaw(startPath) {
 }
 
 function getPrimaryWorktreeRoot(projectRoot) {
+  if (readConfig().canonicalWorktree !== true) {
+    return projectRoot;
+  }
+
   const result = spawnSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -120,9 +132,8 @@ function getPrimaryWorktreeRoot(projectRoot) {
   return path.resolve(primaryRoot);
 }
 
-function canonicalizeGitWorktreePath(filePath, projectRoot) {
+function canonicalizeGitWorktreePath(filePath, projectRoot, primaryRoot = getPrimaryWorktreeRoot(projectRoot)) {
   const resolvedPath = path.resolve(filePath);
-  const primaryRoot = getPrimaryWorktreeRoot(projectRoot);
 
   if (primaryRoot === projectRoot || !resolvedPath.startsWith(`${projectRoot}${path.sep}`)) {
     return resolvedPath;
@@ -256,7 +267,7 @@ function normalizePath(filePath, cwd) {
     ? path.normalize(cleaned)
     : path.normalize(path.join(cwd, cleaned));
 
-  return canonicalizeGitWorktreePath(candidatePath, resolveProjectRootRaw(candidatePath));
+  return candidatePath;
 }
 
 function toHeartbeatPath(filePath, paths = getPaths()) {
@@ -272,29 +283,31 @@ function isInsideDir(filePath, dirPath) {
   return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
 }
 
-function filterTrackableFiles(files, cwd, logger = () => {}) {
-  const projectRoot = resolveProjectRoot(cwd);
+function filterTrackableFiles(files, cwd, logger = () => {}, projectRoot = resolveProjectRoot(cwd), rawProjectRoot = projectRoot) {
 
-  return files.filter((file) => {
+  return files.map((file) => {
     if (!fs.existsSync(file.path)) {
       logger(`skipped missing extracted file path=${file.path}`);
-      return false;
+      return null;
     }
 
     const stats = fs.statSync(file.path);
 
     if (!stats.isFile()) {
       logger(`skipped non-file extracted path=${file.path}`);
-      return false;
+      return null;
     }
 
-    if (!isInsideDir(file.path, projectRoot)) {
+    if (!isInsideDir(file.path, rawProjectRoot)) {
       logger(`skipped extracted file outside project path=${file.path}`);
-      return false;
+      return null;
     }
 
-    return true;
-  });
+    return {
+      ...file,
+      path: canonicalizeGitWorktreePath(file.path, rawProjectRoot, projectRoot),
+    };
+  }).filter(Boolean);
 }
 
 function extractEditedFilesFromPatch(patchText, cwd) {
@@ -372,41 +385,114 @@ function mergeFiles(existingFiles, newFiles) {
   return Array.from(fileMap.values());
 }
 
-function rememberTurnFiles(payload, files) {
-  const turnKey = getTurnStateKey(payload);
+function getTurnFilesPath(turnKey) {
+  const encodedKey = Buffer.from(turnKey).toString("base64url");
+  return path.join(path.dirname(getStateFilePath()), "codex-app-wakatime-turns", `${encodedKey}.jsonl`);
+}
 
+function getTurnFilesDir() {
+  return path.dirname(getTurnFilesPath("turns"));
+}
+
+function pruneQueuedTurnFiles() {
+  const dirPath = getTurnFilesDir();
+
+  if (!fs.existsSync(dirPath)) {
+    return;
+  }
+
+  const files = fs.readdirSync(dirPath)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((name) => {
+      const filePath = path.join(dirPath, name);
+      return {
+        filePath,
+        mtimeMs: fs.statSync(filePath).mtimeMs,
+      };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const file of files.slice(MAX_TRACKED_TURNS)) {
+    fs.unlinkSync(file.filePath);
+  }
+}
+
+function appendTurnFiles(turnKey, files) {
   if (!turnKey || files.length === 0) {
     return;
   }
 
-  const state = readState();
-  const turnFiles = state.turnFiles && typeof state.turnFiles === "object" ? state.turnFiles : {};
-  const existing = Array.isArray(turnFiles[turnKey]?.files) ? turnFiles[turnKey].files : [];
-
-  turnFiles[turnKey] = {
+  const filePath = getTurnFilesPath(turnKey);
+  ensureDir(path.dirname(filePath));
+  fs.appendFileSync(filePath, `${JSON.stringify({
     updatedAt: Math.floor(Date.now() / 1000),
-    files: mergeFiles(existing, files),
-  };
-
-  const pruned = Object.fromEntries(Object.entries(turnFiles)
-    .sort(([, left], [, right]) => (right.updatedAt || 0) - (left.updatedAt || 0))
-    .slice(0, MAX_TRACKED_TURNS));
-
-  writeState({
-    ...state,
-    turnFiles: pruned,
-  });
+    files,
+  })}\n`);
 }
 
-function readTurnFiles(payload) {
+function readQueuedTurnFiles(turnKey) {
+  if (!turnKey) {
+    return [];
+  }
+
+  const filePath = getTurnFilesPath(turnKey);
+
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+
+  const files = [];
+
+  for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    try {
+      const entry = JSON.parse(line);
+      if (Array.isArray(entry.files)) {
+        files.push(...entry.files);
+      }
+    } catch {
+      // Ignore a partial line if a hook process was interrupted mid-write.
+    }
+  }
+
+  return mergeFiles([], files);
+}
+
+function clearQueuedTurnFiles(turnKey) {
+  if (!turnKey) {
+    return;
+  }
+
+  const filePath = getTurnFilesPath(turnKey);
+
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+}
+
+function rememberTurnFiles(payload, files) {
+  const turnKey = getTurnStateKey(payload);
+
+  appendTurnFiles(turnKey, files);
+}
+
+function readTurnFiles(payload, state = readState()) {
   const turnKey = getTurnStateKey(payload);
 
   if (!turnKey) {
     return [];
   }
 
-  const files = readState().turnFiles?.[turnKey]?.files;
-  return Array.isArray(files) ? files : [];
+  pruneQueuedTurnFiles();
+
+  const files = state.turnFiles?.[turnKey]?.files;
+  return mergeFiles(
+    Array.isArray(files) ? files : [],
+    readQueuedTurnFiles(turnKey)
+  );
 }
 
 function clearTurnFiles(payload) {
@@ -415,6 +501,8 @@ function clearTurnFiles(payload) {
   if (!turnKey) {
     return;
   }
+
+  clearQueuedTurnFiles(turnKey);
 
   const state = readState();
 
@@ -660,6 +748,7 @@ function resolveRuntimePaths(options = {}) {
       distro: null,
       wakatimeCli: findNativeWakatimeCli(homeDir, options),
       wakatimeConfig: options.wakatimeConfig || path.join(homeDir, ".wakatime.cfg"),
+      configFile: options.configFile || path.join(homeDir, ".wakatime", CONFIG_FILE_NAME),
       wakatimeLog: options.wakatimeLog || path.join(homeDir, ".wakatime", "wakatime.log"),
       stateFile: options.stateFile || path.join(homeDir, ".wakatime", "codex-app-wakatime.json"),
       codexHooks: options.codexHooks || path.join(homeDir, ".codex", "hooks.json"),
@@ -674,6 +763,7 @@ function resolveRuntimePaths(options = {}) {
   }
 
   const isWindowsRuntime = runtime === "windows";
+  const homeDir = options.homeDir || os.homedir();
   const defaultWakatimeCli = isWindowsRuntime
     ? path.win32.join(windowsHome.win, ".wakatime", "wakatime-cli-windows-amd64.exe")
     : path.posix.join(windowsHome.wsl, ".wakatime", "wakatime-cli-windows-amd64.exe");
@@ -692,6 +782,9 @@ function resolveRuntimePaths(options = {}) {
     distro: options.distro || process.env.WSL_DISTRO_NAME || "Ubuntu",
     wakatimeCli: options.wakatimeCli || process.env.WAKATIME_CLI_PATH || defaultWakatimeCli,
     wakatimeConfig: options.wakatimeConfig || path.win32.join(windowsHome.win, ".wakatime.cfg"),
+    configFile: options.configFile || (isWindowsRuntime
+      ? path.win32.join(windowsHome.win, ".wakatime", CONFIG_FILE_NAME)
+      : path.posix.join(homeDir, ".wakatime", CONFIG_FILE_NAME)),
     wakatimeLog: options.wakatimeLog || path.win32.join(windowsHome.win, ".wakatime", "wakatime.log"),
     stateFile: options.stateFile || (isWindowsRuntime
       ? path.win32.join(windowsHome.win, ".wakatime", "codex-app-wakatime.json")
@@ -705,8 +798,67 @@ function getPaths(options = {}) {
   return resolveRuntimePaths(options);
 }
 
+function getConfigFilePath(options = {}) {
+  if (options.configFile) {
+    return options.configFile;
+  }
+
+  if (activeOptions.configFile) {
+    return activeOptions.configFile;
+  }
+
+  const homeDir = options.homeDir || os.homedir();
+  return path.join(homeDir, ".wakatime", CONFIG_FILE_NAME);
+}
+
+function getStateFilePath(options = {}) {
+  if (options.stateFile) {
+    return options.stateFile;
+  }
+
+  if (activeOptions.stateFile) {
+    return activeOptions.stateFile;
+  }
+
+  return getPaths(options).stateFile;
+}
+
+function readConfig(options = {}) {
+  if (!options.configFile && cachedConfig) {
+    return cachedConfig;
+  }
+
+  const config = readJsonSafe(toReadableHostPath(getConfigFilePath(options))) || {};
+  const normalized = {
+    ...DEFAULT_CONFIG,
+    ...config,
+  };
+
+  if (!options.configFile) {
+    cachedConfig = normalized;
+  }
+
+  return normalized;
+}
+
+function ensureConfigFile(paths) {
+  const readableConfigFile = toReadableHostPath(paths.configFile);
+
+  if (!fs.existsSync(readableConfigFile)) {
+    writeJson(readableConfigFile, DEFAULT_CONFIG);
+  }
+}
+
+function isDebugEnabled() {
+  return readConfig().debug === true;
+}
+
 function logDebug(message) {
-  const { codexLog } = getPaths();
+  if (!isDebugEnabled()) {
+    return;
+  }
+
+  const codexLog = activeOptions.codexLog || getPaths().codexLog;
   ensureDir(path.dirname(codexLog));
   fs.appendFileSync(codexLog, `[${new Date().toISOString()}] ${message}\n`);
 }
@@ -726,7 +878,7 @@ function writeOk() {
 }
 
 function readState() {
-  const { stateFile } = getPaths();
+  const stateFile = getStateFilePath();
 
   if (!fs.existsSync(stateFile)) {
     return {};
@@ -740,17 +892,16 @@ function readState() {
 }
 
 function writeState(state) {
-  const { stateFile } = getPaths();
+  const stateFile = getStateFilePath();
   ensureDir(path.dirname(stateFile));
   fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-function shouldSendHeartbeat(signature, force = false) {
+function shouldSendHeartbeat(signature, force = false, state = readState()) {
   if (force) {
     return true;
   }
 
-  const state = readState();
   const lastHeartbeatAt = state.lastHeartbeatAt || 0;
   const lastSignature = state.lastSignature || "";
   const elapsed = Math.floor(Date.now() / 1000) - lastHeartbeatAt;
@@ -762,9 +913,9 @@ function shouldSendHeartbeat(signature, force = false) {
   return signature !== lastSignature;
 }
 
-function updateLastHeartbeat(signature) {
+function updateLastHeartbeat(signature, state = readState()) {
   writeState({
-    ...readState(),
+    ...state,
     lastHeartbeatAt: Math.floor(Date.now() / 1000),
     lastSignature: signature,
   });
@@ -860,8 +1011,7 @@ function sendHeartbeat(params) {
   return { ok: true, entity: params.entity };
 }
 
-function sendProjectHeartbeat(cwd) {
-  const projectRoot = resolveProjectRoot(cwd);
+function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd)) {
   const project = basenameAny(projectRoot);
   return sendHeartbeat({
     entity: "Codex",
@@ -870,13 +1020,19 @@ function sendProjectHeartbeat(cwd) {
   });
 }
 
-function limitFilesForHeartbeats(files) {
-  return files.slice(0, MAX_FILE_HEARTBEATS_PER_HOOK);
+function getMaxFileHeartbeats() {
+  const configuredLimit = Number(readConfig().maxFileHeartbeats);
+  return Number.isFinite(configuredLimit) && configuredLimit > 0
+    ? Math.floor(configuredLimit)
+    : DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK;
 }
 
-function sendFileHeartbeats(files, cwd) {
+function limitFilesForHeartbeats(files) {
+  return files.slice(0, getMaxFileHeartbeats());
+}
+
+function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd)) {
   const paths = getPaths();
-  const projectRoot = resolveProjectRoot(cwd);
   const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
   const filesToSend = limitFilesForHeartbeats(files);
   let sentCount = 0;
@@ -918,10 +1074,26 @@ function buildHookEntry(paths = getPaths(), options = {}) {
   const quotedBinPath = paths.runtime === "windows"
     ? quoteWindowsShellArg(BIN_PATH)
     : quotePosixShellArg(BIN_PATH);
+  const quoteArg = paths.runtime === "windows" ? quoteWindowsShellArg : quotePosixShellArg;
+  const commandParts = [
+    "node",
+    quotedBinPath,
+    "hook",
+  ];
+
+  for (const [flag, value] of [
+    ["--state-file", paths.stateFile],
+    ["--config-file", paths.configFile],
+    ["--codex-log", paths.codexLog],
+  ]) {
+    if (value) {
+      commandParts.push(flag, quoteArg(value));
+    }
+  }
 
   const entry = {
     type: "command",
-    command: `node ${quotedBinPath} hook`,
+    command: commandParts.join(" "),
     timeout: 30,
   };
 
@@ -977,6 +1149,21 @@ function parseOptions(args) {
       index += 1;
     } else if (arg.startsWith("--codex-hooks=")) {
       options.codexHooks = arg.slice("--codex-hooks=".length);
+    } else if (arg === "--state-file") {
+      options.stateFile = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--state-file=")) {
+      options.stateFile = arg.slice("--state-file=".length);
+    } else if (arg === "--config-file") {
+      options.configFile = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--config-file=")) {
+      options.configFile = arg.slice("--config-file=".length);
+    } else if (arg === "--codex-log") {
+      options.codexLog = args[index + 1];
+      index += 1;
+    } else if (arg.startsWith("--codex-log=")) {
+      options.codexLog = arg.slice("--codex-log=".length);
     } else {
       options.rest.push(arg);
     }
@@ -1018,7 +1205,8 @@ function getSetupChecks(paths) {
   };
 }
 
-async function runHook() {
+async function runHook(options = {}) {
+  activeOptions = options;
   const rawInput = await readStdin();
   logDebug(`received input bytes=${rawInput.length}`);
 
@@ -1041,7 +1229,7 @@ async function runHook() {
   const cwd = payload.cwd || process.cwd();
 
   if (payload.hook_event_name === "PostToolUse") {
-    const files = filterTrackableFiles(extractEditedFilesFromHookPayload(payload, cwd), cwd, logDebug);
+    const files = extractEditedFilesFromHookPayload(payload, cwd);
 
     if (files.length > 0) {
       rememberTurnFiles(payload, files);
@@ -1058,15 +1246,17 @@ async function runHook() {
     return;
   }
 
-  const rememberedFiles = readTurnFiles(payload);
+  const state = readState();
+  const rememberedFiles = readTurnFiles(payload, state);
 
-  const projectRoot = resolveProjectRoot(cwd);
-  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug);
+  const rawProjectRoot = resolveProjectRootRaw(cwd);
+  const projectRoot = getPrimaryWorktreeRoot(rawProjectRoot);
+  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
   logDebug(`project root=${projectRoot} tracked edited files=${files.length}`);
 
   const signature = buildSignature(files, cwd);
 
-  if (!shouldSendHeartbeat(signature)) {
+  if (!shouldSendHeartbeat(signature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit");
     clearTurnFiles(payload);
     writeContinue();
@@ -1076,13 +1266,13 @@ async function runHook() {
   let sent = false;
 
   if (files.length > 0) {
-    sent = sendFileHeartbeats(files, cwd);
+    sent = sendFileHeartbeats(files, cwd, projectRoot);
   } else {
-    sent = sendProjectHeartbeat(cwd).ok;
+    sent = sendProjectHeartbeat(cwd, projectRoot).ok;
   }
 
   if (sent) {
-    updateLastHeartbeat(signature);
+    updateLastHeartbeat(signature, state);
   }
 
   clearTurnFiles(payload);
@@ -1092,6 +1282,8 @@ async function runHook() {
 function install(options = {}) {
   const paths = getPaths(options);
   const { codexHooks } = paths;
+
+  ensureConfigFile(paths);
 
   if (!options.skipChecks) {
     warnOnInvalidSetup(paths);
@@ -1165,6 +1357,8 @@ function status(options = {}) {
     codexHooks: paths.codexHooks,
     codexLog: paths.codexLog,
     stateFile: paths.stateFile,
+    configFile: paths.configFile,
+    config: readConfig({ configFile: paths.configFile }),
     wakatimeCli: paths.wakatimeCli,
     wakatimePlugin: buildPluginString(),
     checks: {
@@ -1183,6 +1377,8 @@ function doctor(options = {}) {
     codexHooks: paths.codexHooks,
     wakatimeCli: paths.wakatimeCli,
     wakatimeConfig: paths.wakatimeConfig,
+    configFile: paths.configFile,
+    config: readConfig({ configFile: paths.configFile }),
     wakatimePlugin: buildPluginString(),
     checks,
   }, null, 2));
@@ -1210,7 +1406,7 @@ async function run(argv) {
 
   switch (command) {
     case "hook":
-      await runHook();
+      await runHook(options);
       return;
     case "install":
     case "setup":
