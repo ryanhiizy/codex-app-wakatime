@@ -82,6 +82,13 @@ function hasGitMarker(dirPath) {
   return fs.existsSync(path.join(dirPath, ".git"));
 }
 
+function isCodexScratchWorkspace(startPath) {
+  const codexDocumentsDir = path.join(os.homedir(), "Documents", "Codex");
+  const resolvedPath = path.resolve(startPath || process.cwd());
+
+  return resolvedPath === codexDocumentsDir || resolvedPath.startsWith(`${codexDocumentsDir}${path.sep}`);
+}
+
 function resolveProjectRootRaw(startPath) {
   if (!startPath) {
     return process.cwd();
@@ -1038,6 +1045,13 @@ function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd)) {
   });
 }
 
+function sendUnattributedAppHeartbeat() {
+  return sendHeartbeat({
+    entity: "Codex",
+    entityType: "app",
+  });
+}
+
 function getMaxFileHeartbeats() {
   const configuredLimit = Number(readConfig().maxFileHeartbeats);
   return Number.isFinite(configuredLimit) && configuredLimit > 0
@@ -1273,9 +1287,11 @@ async function runHook(options = {}) {
   const rememberedFiles = readTurnFiles(payload, state);
 
   const rawProjectRoot = resolveProjectRootRaw(cwd);
-  const projectRoot = getPrimaryWorktreeRoot(rawProjectRoot);
-  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
-  logDebug(`project root=${projectRoot} tracked edited files=${files.length}`);
+  const isScratchWorkspace = isCodexScratchWorkspace(cwd) && !hasGitMarker(rawProjectRoot);
+
+  const projectRoot = isScratchWorkspace ? rawProjectRoot : getPrimaryWorktreeRoot(rawProjectRoot);
+  const files = isScratchWorkspace ? [] : filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
+  logDebug(`project root=${projectRoot} tracked edited files=${files.length}${isScratchWorkspace ? " scratch=true" : ""}`);
 
   const signature = buildSignature(files, cwd);
 
@@ -1290,6 +1306,8 @@ async function runHook(options = {}) {
 
   if (files.length > 0) {
     sent = sendFileHeartbeats(files, cwd, projectRoot);
+  } else if (isScratchWorkspace) {
+    sent = sendUnattributedAppHeartbeat().ok;
   } else {
     sent = sendProjectHeartbeat(cwd, projectRoot).ok;
   }
@@ -1471,4 +1489,5 @@ module.exports = {
   extractEditedFilesFromHookPayload,
   limitFilesForHeartbeats,
   filterTrackableFiles,
+  isCodexScratchWorkspace,
 };
