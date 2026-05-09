@@ -221,8 +221,7 @@ test("install writes hooks even when setup validation warns", () => {
   assert.match(command, /--codex-log/);
   assert.deepEqual(JSON.parse(fs.readFileSync(configFile, "utf8")), {
     debug: false,
-    maxFileHeartbeats: 20,
-    canonicalWorktree: true,
+    maxFileHeartbeats: 30,
   });
 });
 
@@ -309,10 +308,10 @@ test("extractEditedFilesFromHookPayload only accepts edit tool events", () => {
 });
 
 test("limitFilesForHeartbeats caps large extraction bursts", () => {
-  const files = Array.from({ length: 25 }, (_, index) => ({
+  const files = Array.from({ length: 35 }, (_, index) => ({
     path: `/tmp/project/file-${index}.js`,
     isWrite: false,
   }));
 
-  assert.deepEqual(cli.limitFilesForHeartbeats(files), files.slice(0, 20));
+  assert.deepEqual(cli.limitFilesForHeartbeats(files), files.slice(0, 30));
 });

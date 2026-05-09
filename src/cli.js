@@ -9,13 +9,12 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
 const DEFAULT_WAKATIME_PLUGIN = "codex-wakatime";
-const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 20;
+const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 30;
 const MAX_TRACKED_TURNS = 100;
 const HOOK_COMMAND_MARKER = "codex-app-wakatime";
 const DEFAULT_CONFIG = {
   debug: false,
   maxFileHeartbeats: DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK,
-  canonicalWorktree: true,
 };
 const CONFIG_FILE_NAME = "codex-app-wakatime.config.json";
 const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
@@ -108,10 +107,6 @@ function resolveProjectRootRaw(startPath) {
 }
 
 function getPrimaryWorktreeRoot(projectRoot) {
-  if (readConfig().canonicalWorktree !== true) {
-    return projectRoot;
-  }
-
   const result = spawnSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
@@ -847,8 +842,15 @@ function readConfig(options = {}) {
   const config = readJsonSafe(toReadableHostPath(getConfigFilePath(options))) || {};
   const normalized = {
     ...DEFAULT_CONFIG,
-    ...config,
   };
+
+  if (typeof config.debug === "boolean") {
+    normalized.debug = config.debug;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, "maxFileHeartbeats")) {
+    normalized.maxFileHeartbeats = config.maxFileHeartbeats;
+  }
 
   if (!options.configFile) {
     cachedConfig = normalized;

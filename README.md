@@ -82,8 +82,7 @@ Install creates `~/.wakatime/codex-app-wakatime.config.json` with debug logging 
 ```json
 {
   "debug": false,
-  "maxFileHeartbeats": 20,
-  "canonicalWorktree": true
+  "maxFileHeartbeats": 30
 }
 ```
 
@@ -97,11 +96,11 @@ Hooks are optimized for low overhead:
 - `Stop` does the filesystem checks and sends the WakaTime heartbeat.
 - Config reads, debug logging, filesystem checks, Git worktree lookup, and WakaTime CLI execution are kept off the `PostToolUse` hot path.
 - Debug logging is disabled by default.
-- Up to 20 file heartbeats are sent per completed turn by default.
+- Up to 30 file heartbeats are sent per completed turn by default.
 
 To adjust file heartbeats per turn, set `"maxFileHeartbeats"` in the config file.
 
-Git worktree canonicalization remains enabled by default for matching WakaTime paths across linked worktrees.
+Git worktree canonicalization is always enabled for matching WakaTime paths across linked worktrees.
 
 ## Troubleshooting
 
