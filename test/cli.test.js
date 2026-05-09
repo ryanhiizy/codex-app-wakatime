@@ -9,6 +9,9 @@ const cli = require("../src/cli");
 
 test("macos runtime uses native Codex and WakaTime paths", () => {
   const home = path.join(os.tmpdir(), "codex-wakatime-mac-home");
+  const homebrewCli = ["/opt/homebrew/bin/wakatime-cli", "/usr/local/bin/wakatime-cli"].find((candidate) => fs.existsSync(candidate));
+  const expectedWakatimeCli = homebrewCli || path.join(home, ".wakatime", "wakatime-cli-darwin-arm64");
+
   const paths = cli.resolveRuntimePaths({
     platform: "darwin",
     homeDir: home,
@@ -17,7 +20,7 @@ test("macos runtime uses native Codex and WakaTime paths", () => {
 
   assert.equal(paths.runtime, "macos");
   assert.equal(paths.codexHooks, path.join(home, ".codex", "hooks.json"));
-  assert.equal(paths.wakatimeCli, path.join(home, ".wakatime", "wakatime-cli-darwin-arm64"));
+  assert.equal(paths.wakatimeCli, expectedWakatimeCli);
   assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
   assert.equal(paths.stateFile, path.join(home, ".wakatime", "codex-app-wakatime.json"));
   assert.equal(cli.toHeartbeatPath("/Users/example/project/app.js", paths), "/Users/example/project/app.js");
@@ -101,11 +104,39 @@ test("macos runtime accepts explicit path overrides", () => {
   assert.equal(paths.codexHooks, path.join(home, "codex-hooks.json"));
 });
 
+test("macos runtime resolves WakaTime CLI from PATH before platform fallback", () => {
+  const home = path.join(os.tmpdir(), "codex-wakatime-path-home");
+  const bin = path.join(os.tmpdir(), "codex-wakatime-path-bin");
+  const wakatimeCli = path.join(bin, "wakatime-cli");
+  const staleWakatimeCli = path.join(home, ".wakatime", "wakatime-cli-darwin-arm64");
+  const previousPath = process.env.PATH;
+
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(wakatimeCli, "#!/bin/sh\n");
+  fs.chmodSync(wakatimeCli, 0o755);
+  fs.mkdirSync(path.dirname(staleWakatimeCli), { recursive: true });
+  fs.writeFileSync(staleWakatimeCli, "");
+  process.env.PATH = bin;
+
+  try {
+    const paths = cli.resolveRuntimePaths({
+      platform: "darwin",
+      homeDir: home,
+      arch: "arm64",
+    });
+
+    assert.equal(paths.wakatimeCli, wakatimeCli);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 test("validateSetup reports each missing dependency by path", () => {
   const home = path.join(os.tmpdir(), "codex-wakatime-missing-home");
   const paths = cli.resolveRuntimePaths({
     platform: "darwin",
     homeDir: home,
+    wakatimeCli: path.join(home, ".wakatime", "wakatime-cli-darwin-arm64"),
   });
 
   assert.throws(
