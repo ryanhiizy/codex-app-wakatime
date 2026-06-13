@@ -226,7 +226,7 @@ test("install writes hooks even when setup validation warns", () => {
 });
 
 test("buildPluginString uses the WakaTime Codex identity", () => {
-  assert.equal(cli.buildPluginString(), `codex/1.0.0 codex-wakatime/${packageJson.version}`);
+  assert.equal(cli.buildPluginString(), `codex/${packageJson.version}`);
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
@@ -313,5 +313,5 @@ test("limitFilesForHeartbeats caps large extraction bursts", () => {
     isWrite: false,
   }));
 
-  assert.deepEqual(cli.limitFilesForHeartbeats(files), files.slice(0, 30));
+  assert.deepEqual(cli.limitFilesForHeartbeats(files, 30), files.slice(0, 30));
 });

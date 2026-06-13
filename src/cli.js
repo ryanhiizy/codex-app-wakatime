@@ -8,7 +8,6 @@ const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
 const DEFAULT_WAKATIME_EDITOR = "codex";
-const DEFAULT_WAKATIME_PLUGIN = "codex-wakatime";
 const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 30;
 const MAX_TRACKED_TURNS = 100;
 const HOOK_COMMAND_MARKER = "codex-app-wakatime";
@@ -957,9 +956,13 @@ function buildWakatimeLaunch(wakatimeCli) {
 
 function buildPluginString(options = {}) {
   const editorName = options.editorName || process.env.CODEX_WAKATIME_EDITOR || DEFAULT_WAKATIME_EDITOR;
-  const pluginName = options.pluginName || process.env.CODEX_WAKATIME_PLUGIN || DEFAULT_WAKATIME_PLUGIN;
+  const pluginName = options.pluginName || process.env.CODEX_WAKATIME_PLUGIN || "";
 
-  return `${editorName}/1.0.0 ${pluginName}/${VERSION}`;
+  if (pluginName) {
+    return `${editorName}/1.0.0 ${pluginName}/${VERSION}`;
+  }
+
+  return `${editorName}/${VERSION}`;
 }
 
 function sendHeartbeat(params, paths = getPaths()) {
@@ -1042,8 +1045,8 @@ function getMaxFileHeartbeats() {
     : DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK;
 }
 
-function limitFilesForHeartbeats(files) {
-  return files.slice(0, getMaxFileHeartbeats());
+function limitFilesForHeartbeats(files, maxFileHeartbeats = getMaxFileHeartbeats()) {
+  return files.slice(0, maxFileHeartbeats);
 }
 
 function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd)) {
