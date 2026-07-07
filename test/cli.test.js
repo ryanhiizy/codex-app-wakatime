@@ -225,6 +225,40 @@ test("install writes hooks even when setup validation warns", () => {
   });
 });
 
+test("install disables WakaTime global AI transcript sync", () => {
+  const home = path.join(os.tmpdir(), "codex-wakatime-ai-sync-home");
+  const codexHooks = path.join(home, ".codex", "hooks.json");
+  const wakatimeCli = path.join(home, ".wakatime", "wakatime-cli");
+  const wakatimeConfig = path.join(home, ".wakatime.cfg");
+  const originalLog = console.log;
+
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(wakatimeCli), { recursive: true });
+  fs.writeFileSync(wakatimeCli, "");
+  fs.writeFileSync(wakatimeConfig, "[settings]\napi_key = test\n");
+  console.log = () => {};
+
+  try {
+    cli.install({
+      homeDir: home,
+      codexHooks,
+      wakatimeCli,
+      wakatimeConfig,
+      platform: "darwin",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.equal(cli.isWakatimeAiSyncDisabled({ wakatimeConfig }), true);
+  assert.match(fs.readFileSync(wakatimeConfig, "utf8"), /sync_ai_disabled = true/);
+  assert.doesNotThrow(() => cli.validateSetup({
+    wakatimeCli,
+    wakatimeConfig,
+    runtime: "macos",
+  }));
+});
+
 test("buildPluginString uses the WakaTime Codex identity", () => {
   assert.equal(cli.buildPluginString(), `codex/${packageJson.version}`);
 });

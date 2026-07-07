@@ -539,6 +539,91 @@ function readJsonSafe(filePath) {
   }
 }
 
+function readWakatimeConfigSetting(filePath, key) {
+  const readablePath = toReadableHostPath(filePath);
+
+  if (!fs.existsSync(readablePath)) {
+    return null;
+  }
+
+  let inSettingsSection = false;
+
+  for (const line of fs.readFileSync(readablePath, "utf8").split(/\r?\n/)) {
+    const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+
+    if (section) {
+      inSettingsSection = section[1] === "settings";
+      continue;
+    }
+
+    if (!inSettingsSection) {
+      continue;
+    }
+
+    const setting = line.match(/^\s*([^#;=\s]+)\s*=\s*(.*?)\s*$/);
+
+    if (setting && setting[1] === key) {
+      return setting[2];
+    }
+  }
+
+  return null;
+}
+
+function setWakatimeConfigSetting(filePath, key, value) {
+  const readablePath = toReadableHostPath(filePath);
+  const existingText = fs.existsSync(readablePath) ? fs.readFileSync(readablePath, "utf8") : "";
+  const lines = existingText.split(/\r?\n/);
+  const hasTrailingNewline = existingText.endsWith("\n") || existingText === "";
+  const settingsHeaderIndex = lines.findIndex((line) => /^\s*\[settings\]\s*$/.test(line));
+
+  if (settingsHeaderIndex === -1) {
+    const prefix = [`[settings]`, `${key} = ${value}`, ""];
+    const nextLines = existingText.trim() ? [...prefix, ...lines] : prefix;
+    ensureDir(path.dirname(readablePath));
+    fs.writeFileSync(readablePath, `${nextLines.join("\n").replace(/\n+$/, "")}\n`);
+    return;
+  }
+
+  let nextSectionIndex = lines.findIndex((line, index) => index > settingsHeaderIndex && /^\s*\[[^\]]+\]\s*$/.test(line));
+
+  if (nextSectionIndex === -1) {
+    nextSectionIndex = lines.length;
+  }
+
+  for (let index = settingsHeaderIndex + 1; index < nextSectionIndex; index += 1) {
+    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
+      lines[index] = `${key} = ${value}`;
+      ensureDir(path.dirname(readablePath));
+      fs.writeFileSync(readablePath, `${lines.join("\n").replace(/\n+$/, "")}${hasTrailingNewline ? "\n" : ""}`);
+      return;
+    }
+  }
+
+  lines.splice(settingsHeaderIndex + 1, 0, `${key} = ${value}`);
+  ensureDir(path.dirname(readablePath));
+  fs.writeFileSync(readablePath, `${lines.join("\n").replace(/\n+$/, "")}${hasTrailingNewline ? "\n" : ""}`);
+}
+
+function isWakatimeAiSyncDisabled(paths = getPaths()) {
+  return readWakatimeConfigSetting(paths.wakatimeConfig, "sync_ai_disabled") === "true";
+}
+
+function ensureWakatimeAiSyncDisabled(paths = getPaths()) {
+  const readablePath = toReadableHostPath(paths.wakatimeConfig);
+
+  if (!fs.existsSync(readablePath)) {
+    return false;
+  }
+
+  if (isWakatimeAiSyncDisabled(paths)) {
+    return false;
+  }
+
+  setWakatimeConfigSetting(paths.wakatimeConfig, "sync_ai_disabled", "true");
+  return true;
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -986,6 +1071,7 @@ function sendHeartbeat(params, paths = getPaths()) {
     paths.wakatimeLog,
     "--heartbeat-rate-limit-seconds",
     "60",
+    "--sync-ai-disabled",
     "--timeout",
     "30",
   ];
@@ -1205,6 +1291,8 @@ function validateSetup(paths) {
 
   if (!fs.existsSync(toReadableHostPath(paths.wakatimeConfig))) {
     failures.push(`missing WakaTime config: ${paths.wakatimeConfig}`);
+  } else if (!isWakatimeAiSyncDisabled(paths)) {
+    failures.push(`WakaTime AI transcript sync must be disabled: ${paths.wakatimeConfig}`);
   }
 
   if (failures.length > 0) {
@@ -1226,6 +1314,7 @@ function getSetupChecks(paths) {
     codexHooksExists: fs.existsSync(paths.codexHooks),
     wakatimeCliExists: commandOrFileExists(paths.wakatimeCli),
     wakatimeConfigExists: fs.existsSync(toReadableHostPath(paths.wakatimeConfig)),
+    wakatimeAiSyncDisabled: fs.existsSync(toReadableHostPath(paths.wakatimeConfig)) ? isWakatimeAiSyncDisabled(paths) : null,
   };
 }
 
@@ -1315,6 +1404,7 @@ function install(options = {}) {
   const { codexHooks } = paths;
 
   ensureConfigFile(paths);
+  ensureWakatimeAiSyncDisabled(paths);
 
   if (!options.skipChecks) {
     warnOnInvalidSetup(paths);
@@ -1393,6 +1483,7 @@ function status(options = {}) {
     config: readConfig({ configFile: paths.configFile }),
     wakatimeCli: paths.wakatimeCli,
     wakatimePlugin: buildPluginString(),
+    wakatimeAiSyncDisabled: isWakatimeAiSyncDisabled(paths),
     checks: {
       ...getSetupChecks(paths),
     },
@@ -1413,6 +1504,7 @@ function doctor(options = {}) {
     turnFilesDir: paths.turnFilesDir,
     config: readConfig({ configFile: paths.configFile }),
     wakatimePlugin: buildPluginString(),
+    wakatimeAiSyncDisabled: isWakatimeAiSyncDisabled(paths),
     checks,
   }, null, 2));
 
@@ -1473,6 +1565,8 @@ module.exports = {
   buildHookEntry,
   isOurHookEntry,
   buildPluginString,
+  ensureWakatimeAiSyncDisabled,
+  isWakatimeAiSyncDisabled,
   parseOptions,
   toReadableHostPath,
   extractEditedFilesFromPatch,
