@@ -7,7 +7,7 @@ const packageJson = require("../package.json");
 const VERSION = packageJson.version;
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BIN_PATH = path.join(ROOT_DIR, "bin", "codex-app-wakatime.js");
-const DEFAULT_WAKATIME_EDITOR = "codex";
+const DEFAULT_WAKATIME_EDITOR = "codex-app";
 const DEFAULT_MAX_FILE_HEARTBEATS_PER_HOOK = 30;
 const MAX_TRACKED_TURNS = 100;
 const HOOK_COMMAND_MARKER = "codex-app-wakatime";
@@ -609,18 +609,18 @@ function isWakatimeAiSyncDisabled(paths = getPaths()) {
   return readWakatimeConfigSetting(paths.wakatimeConfig, "sync_ai_disabled") === "true";
 }
 
-function ensureWakatimeAiSyncDisabled(paths = getPaths()) {
+function ensureWakatimeAiSyncEnabled(paths = getPaths()) {
   const readablePath = toReadableHostPath(paths.wakatimeConfig);
 
   if (!fs.existsSync(readablePath)) {
     return false;
   }
 
-  if (isWakatimeAiSyncDisabled(paths)) {
+  if (!isWakatimeAiSyncDisabled(paths)) {
     return false;
   }
 
-  setWakatimeConfigSetting(paths.wakatimeConfig, "sync_ai_disabled", "true");
+  setWakatimeConfigSetting(paths.wakatimeConfig, "sync_ai_disabled", "false");
   return true;
 }
 
@@ -1071,7 +1071,6 @@ function sendHeartbeat(params, paths = getPaths()) {
     paths.wakatimeLog,
     "--heartbeat-rate-limit-seconds",
     "60",
-    "--sync-ai-disabled",
     "--timeout",
     "30",
   ];
@@ -1291,8 +1290,8 @@ function validateSetup(paths) {
 
   if (!fs.existsSync(toReadableHostPath(paths.wakatimeConfig))) {
     failures.push(`missing WakaTime config: ${paths.wakatimeConfig}`);
-  } else if (!isWakatimeAiSyncDisabled(paths)) {
-    failures.push(`WakaTime AI transcript sync must be disabled: ${paths.wakatimeConfig}`);
+  } else if (isWakatimeAiSyncDisabled(paths)) {
+    failures.push(`WakaTime AI transcript sync must be enabled: ${paths.wakatimeConfig}`);
   }
 
   if (failures.length > 0) {
@@ -1404,7 +1403,7 @@ function install(options = {}) {
   const { codexHooks } = paths;
 
   ensureConfigFile(paths);
-  ensureWakatimeAiSyncDisabled(paths);
+  ensureWakatimeAiSyncEnabled(paths);
 
   if (!options.skipChecks) {
     warnOnInvalidSetup(paths);
@@ -1565,7 +1564,7 @@ module.exports = {
   buildHookEntry,
   isOurHookEntry,
   buildPluginString,
-  ensureWakatimeAiSyncDisabled,
+  ensureWakatimeAiSyncEnabled,
   isWakatimeAiSyncDisabled,
   parseOptions,
   toReadableHostPath,

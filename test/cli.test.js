@@ -225,7 +225,7 @@ test("install writes hooks even when setup validation warns", () => {
   });
 });
 
-test("install disables WakaTime global AI transcript sync", () => {
+test("install enables WakaTime global AI transcript sync", () => {
   const home = path.join(os.tmpdir(), "codex-wakatime-ai-sync-home");
   const codexHooks = path.join(home, ".codex", "hooks.json");
   const wakatimeCli = path.join(home, ".wakatime", "wakatime-cli");
@@ -235,7 +235,7 @@ test("install disables WakaTime global AI transcript sync", () => {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(wakatimeCli), { recursive: true });
   fs.writeFileSync(wakatimeCli, "");
-  fs.writeFileSync(wakatimeConfig, "[settings]\napi_key = test\n");
+  fs.writeFileSync(wakatimeConfig, "[settings]\napi_key = test\nsync_ai_disabled = true\n");
   console.log = () => {};
 
   try {
@@ -250,8 +250,8 @@ test("install disables WakaTime global AI transcript sync", () => {
     console.log = originalLog;
   }
 
-  assert.equal(cli.isWakatimeAiSyncDisabled({ wakatimeConfig }), true);
-  assert.match(fs.readFileSync(wakatimeConfig, "utf8"), /sync_ai_disabled = true/);
+  assert.equal(cli.isWakatimeAiSyncDisabled({ wakatimeConfig }), false);
+  assert.match(fs.readFileSync(wakatimeConfig, "utf8"), /sync_ai_disabled = false/);
   assert.doesNotThrow(() => cli.validateSetup({
     wakatimeCli,
     wakatimeConfig,
@@ -260,7 +260,7 @@ test("install disables WakaTime global AI transcript sync", () => {
 });
 
 test("buildPluginString uses the WakaTime Codex identity", () => {
-  assert.equal(cli.buildPluginString(), `codex/${packageJson.version}`);
+  assert.equal(cli.buildPluginString(), `codex-app/${packageJson.version}`);
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
