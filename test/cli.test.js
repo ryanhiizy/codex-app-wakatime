@@ -6,9 +6,11 @@ const test = require("node:test");
 const packageJson = require("../package.json");
 
 const cli = require("../src/cli");
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-suite-"));
+test.after(() => fs.rmSync(testRoot, { recursive: true, force: true }));
 
 test("macos runtime uses native Codex and WakaTime paths", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-mac-home");
+  const home = path.join(testRoot, "codex-wakatime-mac-home");
   const homebrewCli = ["/opt/homebrew/bin/wakatime-cli", "/usr/local/bin/wakatime-cli"].find((candidate) => fs.existsSync(candidate));
   const expectedWakatimeCli = homebrewCli || path.join(home, ".wakatime", "wakatime-cli-darwin-arm64");
 
@@ -27,7 +29,7 @@ test("macos runtime uses native Codex and WakaTime paths", () => {
 });
 
 test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to UNC", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-wsl-home");
+  const home = path.join(testRoot, "codex-wakatime-wsl-home");
   const paths = cli.resolveRuntimePaths({
     platform: "linux",
     isWsl: true,
@@ -43,12 +45,13 @@ test("wsl runtime keeps Windows WakaTime paths and converts heartbeat paths to U
   assert.equal(paths.codexHooks, "/mnt/c/Users/User/.codex/hooks.json");
   assert.equal(paths.wakatimeCli, "/mnt/c/Users/User/.wakatime/wakatime-cli-windows-amd64.exe");
   assert.equal(paths.wakatimeConfig, "C:\\Users\\User\\.wakatime.cfg");
-  assert.equal(paths.turnFilesDir, path.join(home, ".wakatime", "codex-app-wakatime-turns"));
+  assert.equal(paths.turnFilesDir, path.posix.join(home, ".wakatime", "codex-app-wakatime-turns"));
   assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "\\\\wsl.localhost\\Ubuntu\\home\\user\\project\\app.js");
 });
 
 test("wsl setup checks read Windows config through the mounted host path", () => {
-  assert.equal(cli.toReadableHostPath("C:\\Users\\User\\.wakatime.cfg"), "/mnt/c/Users/User/.wakatime.cfg");
+  assert.equal(cli.toReadableHostPath("C:\\Users\\User\\.wakatime.cfg"),
+    process.platform === "win32" ? "C:\\Users\\User\\.wakatime.cfg" : "/mnt/c/Users/User/.wakatime.cfg");
 });
 
 test("wsl runtime accepts WAKATIME_CLI_PATH override", () => {
@@ -95,7 +98,7 @@ test("auto runtime selects macos on darwin", () => {
 });
 
 test("macos runtime accepts explicit path overrides", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-custom-home");
+  const home = path.join(testRoot, "codex-wakatime-custom-home");
   const paths = cli.resolveRuntimePaths({
     platform: "darwin",
     homeDir: home,
@@ -108,8 +111,8 @@ test("macos runtime accepts explicit path overrides", () => {
 });
 
 test("macos runtime resolves WakaTime CLI from PATH before platform fallback", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-path-home");
-  const bin = path.join(os.tmpdir(), "codex-wakatime-path-bin");
+  const home = path.join(testRoot, "codex-wakatime-path-home");
+  const bin = path.join(testRoot, "codex-wakatime-path-bin");
   const wakatimeCli = path.join(bin, "wakatime-cli");
   const staleWakatimeCli = path.join(home, ".wakatime", "wakatime-cli-darwin-arm64");
   const previousPath = process.env.PATH;
@@ -135,7 +138,7 @@ test("macos runtime resolves WakaTime CLI from PATH before platform fallback", (
 });
 
 test("validateSetup reports each missing dependency by path", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-missing-home");
+  const home = path.join(testRoot, "codex-wakatime-missing-home");
   const paths = cli.resolveRuntimePaths({
     platform: "darwin",
     homeDir: home,
@@ -156,8 +159,8 @@ test("hook command uses shell quoting for the selected runtime", () => {
   const macCommand = cli.buildHookEntry({ runtime: "macos" }).command;
   const windowsCommand = cli.buildHookEntry({ runtime: "windows" }).command;
 
-  assert.match(macCommand, /^node '.+' hook/);
-  assert.match(windowsCommand, /^node ".+" hook/);
+  assert.match(macCommand, /^'[^']+' '.+' hook/);
+  assert.match(windowsCommand, /^"[^"]+" ".+" hook/);
 });
 
 test("hook matching replaces old installs from different package paths", () => {
@@ -183,7 +186,7 @@ test("parseOptions keeps positional arguments separate from option flags", () =>
 });
 
 test("install writes hooks even when setup validation warns", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-install-warning-home");
+  const home = path.join(testRoot, "codex-wakatime-install-warning-home");
   const codexHooks = path.join(home, ".codex", "hooks.json");
   const originalLog = console.log;
   const originalWarn = console.warn;
@@ -226,7 +229,7 @@ test("install writes hooks even when setup validation warns", () => {
 });
 
 test("install enables WakaTime global AI transcript sync", () => {
-  const home = path.join(os.tmpdir(), "codex-wakatime-ai-sync-home");
+  const home = path.join(testRoot, "codex-wakatime-ai-sync-home");
   const codexHooks = path.join(home, ".codex", "hooks.json");
   const wakatimeCli = path.join(home, ".wakatime", "wakatime-cli");
   const wakatimeConfig = path.join(home, ".wakatime.cfg");
@@ -273,7 +276,7 @@ test("buildPluginString supports explicit identity overrides", () => {
 });
 
 test("filterTrackableFiles keeps only existing files inside the project", () => {
-  const cwd = path.join(os.tmpdir(), "codex-wakatime-filter-project");
+  const cwd = path.join(testRoot, "codex-wakatime-filter-project");
   const sourceFile = path.join(cwd, "src", "cli.js");
   const appBundle = "/Applications/Codex.app";
 
@@ -292,7 +295,7 @@ test("filterTrackableFiles keeps only existing files inside the project", () => 
 });
 
 test("extractEditedFilesFromPatch reads apply_patch file headers", () => {
-  const cwd = path.join(os.tmpdir(), "codex-wakatime-patch-project");
+  const cwd = path.join(testRoot, "codex-wakatime-patch-project");
   const addedFile = path.join(cwd, "src", "added.ts");
   const updatedFile = path.join(cwd, "src", "updated.ts");
   const movedFile = path.join(cwd, "src", "new-name.ts");
@@ -317,7 +320,7 @@ test("extractEditedFilesFromPatch reads apply_patch file headers", () => {
 });
 
 test("extractEditedFilesFromHookPayload only accepts edit tool events", () => {
-  const cwd = path.join(os.tmpdir(), "codex-wakatime-hook-payload-project");
+  const cwd = path.join(testRoot, "codex-wakatime-hook-payload-project");
   const sourceFile = path.join(cwd, "src", "cli.js");
   const patch = [
     "*** Begin Patch",
@@ -413,13 +416,17 @@ test("installed Codex hooks send file and project heartbeats through the selecte
   fs.mkdirSync(project);
   const source = path.join(project, "main.js");
   fs.writeFileSync(source, "export {};\n");
-  fs.writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o755 });
-  const captured = () => fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+  fs.writeFileSync(binary, "");
+  const childEnv = { ...process.env, WAKATIME_FAKE_CLI: binary, WAKATIME_CAPTURE: capture,
+    NODE_OPTIONS: `--require ${JSON.stringify(path.resolve(__dirname, "fixtures/mock-wakatime.cjs"))}` };
+  delete childEnv.CODEX_WAKATIME_EDITOR;
+  delete childEnv.CODEX_WAKATIME_PLUGIN;
+  const captured = () => fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse).map((call) => call.args);
   const directCalls = () => captured().filter((args) => args.includes("--entity"));
   const originalLog = console.log;
   console.log = () => {};
   try {
-    const options = { platform: "linux", isWsl: false, homeDir: home, wakatimeCli: binary, skipChecks: true };
+    const options = { platform: process.platform, isWsl: false, homeDir: home, windowsHome: { win: home, wsl: home }, wakatimeCli: binary, skipChecks: true };
     cli.install(options);
     const paths = cli.resolveRuntimePaths(options);
     const hooks = JSON.parse(fs.readFileSync(paths.codexHooks, "utf8")).hooks;
@@ -427,7 +434,7 @@ test("installed Codex hooks send file and project heartbeats through the selecte
     const stopCommand = hooks.Stop[0].hooks[0].command;
     const base = { session_id: "c", turn_id: "g", cwd: project };
     const invoke = (command, payload) => {
-      const result = spawnSync("/bin/sh", ["-c", command], { input: JSON.stringify(payload), encoding: "utf8", cwd: home });
+      const result = spawnSync(command, { shell: true, input: JSON.stringify(payload), encoding: "utf8", cwd: home, env: childEnv });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(result.stdout), payload.hook_event_name === "PostToolUse" ? {} : { continue: true });
     };
@@ -464,32 +471,15 @@ test("unsupported app selection is rejected", () => {
   assert.throws(() => cli.parseOptions(["--app=other"]), /Unknown option: --app/);
 });
 
-test("failed standalone sync preserves transcript parsing for the direct send", () => {
-  const { spawnSync } = require("node:child_process");
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-sync-fallback-"));
-  const capture = path.join(home, "calls.jsonl");
-  const binary = path.join(home, "fake-wakatime");
-  const config = path.join(home, ".wakatime.cfg");
-  fs.writeFileSync(config, "[settings]\nsync_ai_disabled = false\n");
-  fs.writeFileSync(binary, `#!${process.execPath}
-const args = process.argv.slice(2);
-require('node:fs').appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args) + '\\n');
-process.exit(args.includes('--sync-ai-activity') ? 2 : 0);
-`, { mode: 0o755 });
-  try {
-    const result = spawnSync(process.execPath, [path.resolve(__dirname, "../bin/codex-app-wakatime.js"),
-      "test", home, "--home", home, "--wakatime-cli", binary,
-      "--wakatime-config", config,
-    ], { encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    const calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
-    assert.equal(calls.length, 2);
-    assert.ok(calls[0].includes("--sync-ai-activity"));
-    assert.ok(calls[1].includes("--entity"));
-    assert.ok(!calls[1].includes("--sync-ai-disabled"));
-    assert.equal(calls[1][calls[1].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
-    assert.equal(fs.readFileSync(config, "utf8"), "[settings]\nsync_ai_disabled = false\n");
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true });
-  }
+test("failed standalone sync preserves transcript parsing for the direct send", (t) => {
+  const f = require("./helpers.cjs").fixture(t);
+  const result = f.run(["test", f.home], undefined, { WAKATIME_SYNC_EXIT: "2" });
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls().map((call) => call.args);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].includes("--sync-ai-activity"));
+  assert.ok(calls[1].includes("--entity"));
+  assert.ok(!calls[1].includes("--sync-ai-disabled"));
+  assert.equal(calls[1][calls[1].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
+  assert.equal(fs.readFileSync(f.config, "utf8"), "[settings]\nsync_ai_disabled = false\n");
 });

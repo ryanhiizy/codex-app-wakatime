@@ -14,14 +14,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check ./bin/codex-app-wakatime.js && node --check ./src/cli.js",
+    "check": "node scripts/check.cjs",
     "setup": "node ./bin/codex-app-wakatime.js setup",
     "install:local": "node ./bin/codex-app-wakatime.js install",
     "uninstall:local": "node ./bin/codex-app-wakatime.js uninstall",
     "status": "node ./bin/codex-app-wakatime.js status",
     "doctor": "node ./bin/codex-app-wakatime.js doctor",
     "test:heartbeat": "node ./bin/codex-app-wakatime.js test",
-    "test": "node --test test/*.test.js",
+    "test": "node scripts/test.cjs",
     "prepublishOnly": "npm run check && npm test && npm pack --dry-run"
   },
   "keywords": [

@@ -122,3 +122,55 @@ On WSL, set this if Windows profile detection picks the wrong user:
 ```bash
 export WAKATIME_WINDOWS_HOME='C:\Users\YourName'
 ```
+
+## Development
+
+This package has no runtime dependencies. Run the checks from a source checkout:
+
+```bash
+npm run check
+npm test
+npm pack --dry-run
+```
+
+CI runs the suite on Linux, macOS, and Windows with Node 18, 22, and 24. To also
+exercise an installed WakaTime CLI against a local HTTP server, set
+`WAKATIME_TEST_CLI_PATH` to its absolute path when running `npm test`. That test uses
+a temporary home, synthetic transcripts, and a dummy API key; it never sends to
+your WakaTime account. It verifies transcript import, batch metadata, custom
+project names, offline queue delivery, and new worktree files.
+
+The source is split by responsibility:
+
+| Module | Responsibility |
+| --- | --- |
+| `src/cli.js` | Commands, hook protocol, installation, and turn orchestration |
+| `src/platform.js` | CLI discovery, shell commands, and native/WSL paths |
+| `src/files.js` | Edit extraction, project roots, and worktree attribution |
+| `src/config.js` | Configuration parsing and atomic writes |
+| `src/state.js` | Rate limiting, edit queues, snapshot recovery, and cleanup |
+| `src/wakatime.js` | Transcript sync, heartbeat batching, and process deadlines |
+
+Edit hooks append to a local queue without launching WakaTime or Git. Stop hooks
+claim a snapshot so later edits survive cleanup, retain failed sends for retry,
+and recognize queues written by older versions. Dead-process snapshots recover
+on the next stop for that turn. Failed snapshots are retried before newly queued
+edits. Abandoned snapshots and retries from other turns expire after 24 hours;
+live hooks retain ownership of their snapshots. WakaTime may also buffer successful sends in its
+own offline queue under its normal upload rate limit.
+
+Files in the same project are sent in one CLI invocation using
+`--extra-heartbeats`. A new worktree file that does not yet exist in the primary
+checkout gets its own invocation with `--local-file`, preserving canonical project
+attribution. The default 30-file cap and 60-second duplicate suppression remain.
+WakaTime subprocesses share a 25-second budget to leave time for the hook response.
+
+`node scripts/benchmark.cjs [checkout-path]` measures a synthetic 30-file stop on
+macOS/Linux, including Node startup and real process launches, with a fake CLI and
+no network. On the development Mac, the median of seven runs fell from about
+113 ms to 39 ms, and CLI launches fell from 31 to 2 compared with `c464803`.
+These figures measure hook overhead; real transcript parsing, disk, and network
+costs depend on the installed WakaTime CLI and session history.
+
+Installed commands use the absolute Node executable and retain path overrides,
+including the WakaTime log. Re-run `install` after moving Node or this package.
