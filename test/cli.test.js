@@ -349,3 +349,160 @@ test("limitFilesForHeartbeats caps large extraction bursts", () => {
 
   assert.deepEqual(cli.limitFilesForHeartbeats(files, 30), files.slice(0, 30));
 });
+
+// Native Linux must never depend on a mounted Windows user profile.
+test("native Linux resolves local paths and architecture-specific binaries", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-linux-"));
+  const previousPath = process.env.PATH;
+  const previousCli = process.env.WAKATIME_CLI_PATH;
+  process.env.PATH = "";
+  delete process.env.WAKATIME_CLI_PATH;
+  try {
+    for (const [arch, suffix] of [["x64", "amd64"], ["arm64", "arm64"], ["ia32", "386"], ["arm", "arm"]]) {
+      const paths = cli.resolveRuntimePaths({ platform: "linux", isWsl: false, arch, homeDir: home });
+      assert.equal(paths.runtime, "linux");
+      assert.equal(paths.wakatimeCli, path.join(home, ".wakatime", `wakatime-cli-linux-${suffix}`));
+      assert.equal(paths.codexHooks, path.join(home, ".codex", "hooks.json"));
+      assert.equal(paths.wakatimeConfig, path.join(home, ".wakatime.cfg"));
+      assert.equal(cli.toHeartbeatPath("/home/user/project/app.js", paths), "/home/user/project/app.js");
+    }
+    const generic = path.join(home, ".wakatime", "wakatime-cli");
+    fs.mkdirSync(path.dirname(generic), { recursive: true });
+    fs.writeFileSync(generic, "");
+    assert.equal(cli.resolveRuntimePaths({ platform: "linux", isWsl: false, homeDir: home }).wakatimeCli, generic);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousCli === undefined) delete process.env.WAKATIME_CLI_PATH;
+    else process.env.WAKATIME_CLI_PATH = previousCli;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("Linux runtime distinguishes WSL and uses CLI overrides or PATH", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-linux-path-"));
+  const previousPath = process.env.PATH;
+  const previousCli = process.env.WAKATIME_CLI_PATH;
+  try {
+    assert.equal(cli.detectRuntime({ platform: "linux", isWsl: false }), "linux");
+    assert.equal(cli.detectRuntime({ platform: "linux", isWsl: true }), "wsl");
+    const binary = path.join(home, "wakatime-cli");
+    fs.writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.PATH = home;
+    delete process.env.WAKATIME_CLI_PATH;
+    const options = { platform: "linux", isWsl: false, homeDir: home };
+    assert.equal(cli.resolveRuntimePaths(options).wakatimeCli, binary);
+    process.env.WAKATIME_CLI_PATH = "/custom/linux-cli";
+    assert.equal(cli.resolveRuntimePaths(options).wakatimeCli, "/custom/linux-cli");
+    assert.equal(cli.resolveRuntimePaths({ ...options, wakatimeCli: binary }).wakatimeCli, binary);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousCli === undefined) delete process.env.WAKATIME_CLI_PATH;
+    else process.env.WAKATIME_CLI_PATH = previousCli;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("Cursor install is idempotent and uninstall preserves other hooks", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-cursor-"));
+  const options = { platform: "linux", isWsl: false, app: "cursor", homeDir: home, skipChecks: true };
+  const paths = cli.resolveRuntimePaths(options);
+  const original = { version: 1, custom: true, hooks: {
+    stop: [{ command: "other-tool" }], beforeReadFile: [{ command: "read-tool" }],
+  } };
+  fs.mkdirSync(path.dirname(paths.hooksFile), { recursive: true });
+  fs.writeFileSync(paths.hooksFile, JSON.stringify(original));
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    cli.install(options);
+    assert.deepEqual(JSON.parse(fs.readFileSync(`${paths.hooksFile}.bak`, "utf8")), original);
+    cli.install(options);
+    const installed = JSON.parse(fs.readFileSync(paths.hooksFile, "utf8"));
+    assert.equal(installed.hooks.stop.length, 2);
+    assert.equal(installed.hooks.afterFileEdit.length, 1);
+    assert.match(installed.hooks.stop[1].command, /--app 'cursor'/);
+    assert.equal(paths.hooksFile, path.join(home, ".cursor", "hooks.json"));
+    assert.notEqual(paths.stateFile, cli.resolveRuntimePaths({ ...options, app: "codex" }).stateFile);
+    assert.notEqual(paths.turnFilesDir, cli.resolveRuntimePaths({ ...options, app: "codex" }).turnFilesDir);
+    cli.uninstall(options);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths.hooksFile, "utf8")), original);
+    fs.writeFileSync(paths.hooksFile, "invalid json");
+    assert.throws(() => cli.install(options), SyntaxError);
+    assert.equal(fs.readFileSync(paths.hooksFile, "utf8"), "invalid json");
+  } finally {
+    console.log = originalLog;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("installed Codex and Cursor hooks send file and project heartbeats through the selected CLI", () => {
+  const { spawnSync } = require("node:child_process");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-hook-e2e-"));
+  const capture = path.join(home, "heartbeats.jsonl");
+  const binary = path.join(home, "fake-wakatime");
+  const project = path.join(home, "project with spaces");
+  fs.mkdirSync(project);
+  const source = path.join(project, "main.js");
+  fs.writeFileSync(source, "export {};\n");
+  fs.writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o755 });
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    for (const app of ["codex", "cursor"]) {
+      const options = { platform: "linux", isWsl: false, app, homeDir: home, wakatimeCli: binary, skipChecks: true };
+      cli.install(options);
+      const paths = cli.resolveRuntimePaths(options);
+      const hooks = JSON.parse(fs.readFileSync(paths.hooksFile, "utf8")).hooks;
+      const editCommand = app === "cursor" ? hooks.afterFileEdit[0].command : hooks.PostToolUse[0].hooks[0].command;
+      const stopCommand = app === "cursor" ? hooks.stop[0].command : hooks.Stop[0].hooks[0].command;
+      const base = app === "cursor" ? { conversation_id: "c", generation_id: "g", workspace_roots: [project] }
+        : { session_id: "c", turn_id: "g", cwd: project };
+      const invoke = (command, payload) => {
+        const result = spawnSync("/bin/sh", ["-c", command], { input: JSON.stringify(payload), encoding: "utf8", cwd: home });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout), app === "cursor" ? {} : payload.hook_event_name === "PostToolUse" ? {} : { continue: true });
+      };
+      invoke(editCommand, { ...base, hook_event_name: app === "cursor" ? "afterFileEdit" : "PostToolUse",
+        file_path: source, tool_name: "Edit", tool_input: { file_path: source } });
+      invoke(stopCommand, { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop" });
+      let calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+      const fileCall = calls.at(-1);
+      assert.equal(fileCall[fileCall.indexOf("--entity") + 1], source);
+      assert.equal(fileCall[fileCall.indexOf("--project-folder") + 1], project);
+      assert.equal(fileCall[fileCall.indexOf("--plugin") + 1], `${app === "cursor" ? "cursor" : "codex-app"}/${packageJson.version}`);
+      assert.ok(fileCall.includes("--write"));
+      assert.deepEqual(fs.readdirSync(paths.turnFilesDir), []);
+      if (app === "cursor") {
+        const secondProject = path.join(home, "second project");
+        fs.mkdirSync(secondProject);
+        const secondFile = path.join(secondProject, "other.js");
+        fs.writeFileSync(secondFile, "export {};\n");
+        const multiRoot = { ...base, generation_id: "multi", workspace_roots: [project, secondProject] };
+        invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: secondFile });
+        invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: binary });
+        invoke(stopCommand, { ...multiRoot, hook_event_name: "stop" });
+        const multiCalls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+        assert.equal(multiCalls.length, calls.length + 1);
+        assert.equal(multiCalls.at(-1)[1], secondFile);
+        assert.equal(multiCalls.at(-1)[multiCalls.at(-1).indexOf("--project-folder") + 1], secondProject);
+      }
+      const stop = { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop", generation_id: "next", turn_id: "next" };
+      invoke(stopCommand, stop);
+      calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(calls.at(-1)[1], app === "cursor" ? "Cursor" : "Codex");
+      const count = calls.length;
+      invoke(stopCommand, stop);
+      assert.equal(fs.readFileSync(capture, "utf8").trim().split("\n").length, count);
+    }
+  } finally {
+    console.log = originalLog;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("app selection validates options", () => {
+  assert.deepEqual(cli.parseOptions(["--app", "cursor"]).app, "cursor");
+  assert.equal(cli.parseOptions(["--app=codex"]).app, "codex");
+  assert.throws(() => cli.parseOptions(["--app"]), /Missing value/);
+  assert.throws(() => cli.resolveRuntimePaths({ app: "unknown" }), /Unsupported app/);
+});

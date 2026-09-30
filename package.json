@@ -1,7 +1,7 @@
 {
   "name": "codex-app-wakatime",
-  "version": "0.1.15",
-  "description": "WakaTime heartbeats for Codex desktop app hooks.",
+  "version": "0.1.16",
+  "description": "WakaTime heartbeats for Codex desktop app and Cursor hooks.",
   "main": "./src/cli.js",
   "bin": {
     "codex-app-wakatime": "bin/codex-app-wakatime.js"
@@ -21,13 +21,15 @@
     "status": "node ./bin/codex-app-wakatime.js status",
     "doctor": "node ./bin/codex-app-wakatime.js doctor",
     "test:heartbeat": "node ./bin/codex-app-wakatime.js test",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "prepublishOnly": "npm run check && npm test && npm pack --dry-run"
   },
   "keywords": [
     "ai",
     "codex",
     "openai-codex",
+    "cursor",
+    "linux",
     "wakatime",
     "hooks"
   ],
