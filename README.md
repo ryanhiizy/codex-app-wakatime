@@ -1,12 +1,12 @@
 # codex-app-wakatime
 
-WakaTime heartbeats for the Codex desktop app and Cursor on macOS, native Linux, Windows, and WSL.
+WakaTime heartbeats for the Codex desktop app on macOS, native Linux, Windows, and WSL.
 
-> Codex integration requires the desktop app with hook support, not the standalone Codex CLI. Cursor integration tracks Agent activity.
+> This package is for the Codex desktop app, not the standalone Codex CLI.
 
 ## What It Does
 
-- Installs Codex desktop app `PostToolUse` and `Stop` hooks, or Cursor `afterFileEdit` and `stop` hooks.
+- Installs Codex desktop app `PostToolUse` and `Stop` hooks.
 - Records files edited by Codex `apply_patch`, `Edit`, and `Write` tool calls during a turn.
 - Sends WakaTime heartbeats after completed assistant turns.
 - Attributes activity to the edited files when Codex exposes them through hook payloads.
@@ -17,7 +17,7 @@ WakaTime heartbeats for the Codex desktop app and Cursor on macOS, native Linux,
 ## Prerequisites
 
 - Node.js 18 or newer.
-- Codex desktop app or Cursor with hook support.
+- Codex desktop app with hook support.
 - WakaTime installed and configured before installing this package.
 - A working WakaTime config at `~/.wakatime.cfg` or `C:\Users\<user>\.wakatime.cfg`.
 
@@ -38,22 +38,13 @@ npm install -g codex-app-wakatime
 codex-app-wakatime install
 ```
 
-For Cursor:
-
-```bash
-codex-app-wakatime install --app cursor
-codex-app-wakatime doctor --app cursor
-```
-
-Run both install commands to track both apps. Codex is the default; use `--app cursor` with `install`, `uninstall`, `status`, `doctor`, or `test` to select Cursor. Each app has separate heartbeat state and edited-file queues.
-
 On native Linux, use a Linux WakaTime CLI and a local `~/.wakatime.cfg`; Windows mounts and WSL are not required. This package uses the installed app's hook support.
 
-Restart Codex after installing or changing hooks. Cursor reloads its hook configuration automatically ([Cursor hooks documentation](https://cursor.com/docs/hooks)).
+Restart Codex after installing or changing hooks.
 
 ### Existing Hooks
 
-Install keeps existing hooks from other tools, replaces any previous `codex-app-wakatime` entry for the selected app, and backs up the previous hook file to `hooks.json.bak`. Invalid JSON is reported without overwriting the hook file.
+Install keeps existing hooks from other tools, replaces any previous `codex-app-wakatime` entry, and backs up the previous hook file to `hooks.json.bak`. Invalid JSON is reported without overwriting the hook file.
 
 ## Commands
 
@@ -87,9 +78,7 @@ Windows Codex working on a WSL project:
 | `/mnt/c/Users/<user>/.wakatime/codex-app-wakatime.json` | Stores the last heartbeat timestamp/signature so repeated hook runs do not spam duplicate WakaTime heartbeats. |
 | `~/.wakatime/codex-app-wakatime-turns/*.jsonl` | Temporary per-turn edited-file queues used to keep edit hooks lightweight without writing through `/mnt/c` on every edit. |
 
-Cursor on macOS/native Linux uses `~/.cursor/hooks.json` and `~/.cursor/codex-app-wakatime.log`. Its heartbeat state is `~/.wakatime/cursor-app-wakatime.json`, and its edited-file queue is `~/.wakatime/cursor-app-wakatime-turns/`. The package config is shared. On Windows/WSL, Cursor follows the same host-profile rules as Codex, using `.cursor` in place of `.codex`.
-
-Hook commands retain the selected WakaTime CLI/config paths, so explicit install overrides also apply when the app invokes the hook. Use `--cursor-hooks /path/to/hooks.json` to override Cursor's hooks file.
+Hook commands retain the selected WakaTime CLI/config paths, so explicit install overrides also apply when the app invokes the hook.
 
 ## Config
 

@@ -4,8 +4,7 @@ const { buildWakatimeLaunch, commandOrFileExists, toHeartbeatPath } = require(".
 const { version: VERSION } = require("../package.json");
 
 function buildPluginString(options = {}) {
-  const editor = options.editorName || process.env.CODEX_WAKATIME_EDITOR
-    || (options.app === "cursor" ? "cursor" : "codex-app");
+  const editor = options.editorName || process.env.CODEX_WAKATIME_EDITOR || "codex-app";
   const plugin = options.pluginName || process.env.CODEX_WAKATIME_PLUGIN || "";
   if (plugin) return `${editor}/1.0.0 ${plugin}/${VERSION}`;
   // A lone codex-app token is interpreted as the agent rather than the editor.
@@ -18,16 +17,15 @@ function limitFilesForHeartbeats(files, maximum = 30) {
 }
 
 function createWakatime(getPaths, getConfig, logDebug) {
-  function sendTurn(files, projectRoot) {
+  function sendTurn(files, projectRoot, deadline = Date.now() + 25000) {
     const paths = getPaths();
     if (!commandOrFileExists(paths.wakatimeCli)) {
       logDebug(`missing wakatime cli at ${paths.wakatimeCli}`);
       return { ok: false, reason: "missing_wakatime_cli" };
     }
     // Leave time for state cleanup and a valid hook response before the host's 30s limit.
-    const deadline = Date.now() + 25000;
     const launch = buildWakatimeLaunch(paths.wakatimeCli);
-    const plugin = (includeAgent) => buildPluginString({ app: paths.app, includeAgent });
+    const plugin = (includeAgent) => buildPluginString({ includeAgent });
     const invoke = (args, input, maximumMs = 25000) => {
       const timeout = Math.min(maximumMs, deadline - Date.now());
       if (timeout <= 0) return { ok: false, reason: "hook_timeout" };
@@ -51,7 +49,7 @@ function createWakatime(getPaths, getConfig, logDebug) {
       "--heartbeat-rate-limit-seconds", "60"];
     if (transcriptsSynced) common.push("--sync-ai-disabled");
     if (!files.length) {
-      const entity = paths.app === "cursor" ? "Cursor" : "Codex";
+      const entity = "Codex";
       return { ...invoke(["--entity", entity, "--entity-type", "app",
         "--project", basenameAny(projectRoot), ...common]), entity };
     }

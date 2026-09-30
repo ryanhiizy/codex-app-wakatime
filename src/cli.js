@@ -7,7 +7,7 @@ const config = require("./config");
 const { createStore } = require("./state");
 const { createWakatime, buildPluginString, limitFilesForHeartbeats } = require("./wakatime");
 const { resolveProjectRoot, resolveProjectRootRaw, getPrimaryWorktreeRoot,
-  filterTrackableFiles, extractEditedFilesFromHookPayload, isInsideDir } = files;
+  filterTrackableFiles, extractEditedFilesFromHookPayload } = files;
 const { resolveRuntimePaths, commandOrFileExists, toReadableHostPath,
   quotePosixShellArg, quoteWindowsShellArg } = platform;
 const { readJson, writeJson, readConfig, ensureConfigFile,
@@ -51,7 +51,6 @@ function buildHookEntry(paths = resolveRuntimePaths(), options = {}) {
   ];
 
   for (const [flag, value] of [
-    ["--app", paths.app],
     ["--wakatime-cli", paths.wakatimeCli],
     ["--wakatime-config", paths.wakatimeConfig],
     ["--wakatime-log", paths.wakatimeLog],
@@ -107,7 +106,6 @@ function warnOnInvalidSetup(paths) {
 
 function getSetupChecks(paths) {
   return {
-    hooksFileExists: fs.existsSync(paths.hooksFile || paths.codexHooks),
     codexHooksExists: fs.existsSync(paths.codexHooks),
     wakatimeCliExists: commandOrFileExists(paths.wakatimeCli),
     wakatimeConfigExists: fs.existsSync(toReadableHostPath(paths.wakatimeConfig)),
@@ -129,24 +127,24 @@ function removeOurHookEntries(groups = []) {
   });
 }
 
-function validateHookConfig(value, app) {
+function validateHookConfig(value) {
   if (value === undefined) return;
   const object = (v) => v && typeof v === "object" && !Array.isArray(v);
   if (!object(value) || (value.hooks !== undefined && !object(value.hooks))) {
     throw new Error("Invalid hooks configuration: expected a JSON object with an optional hooks object.");
   }
-  for (const event of app === "cursor" ? ["afterFileEdit", "stop"] : ["PostToolUse", "Stop"]) {
+  for (const event of ["PostToolUse", "Stop"]) {
     const entries = value.hooks?.[event];
     if (entries === undefined) continue;
     if (!Array.isArray(entries) || entries.some((entry) => !object(entry)
-      || (app !== "cursor" && !Array.isArray(entry.hooks)))) {
+      || !Array.isArray(entry.hooks))) {
       throw new Error(`Invalid hooks configuration for ${event}.`);
     }
   }
 }
 
 const VALUE_OPTIONS = {
-  "--app": "app", "--cursor-hooks": "cursorHooks", "--home": "homeDir",
+  "--home": "homeDir",
   "--wakatime-cli": "wakatimeCli", "--wakatime-config": "wakatimeConfig",
   "--wakatime-log": "wakatimeLog", "--codex-hooks": "codexHooks",
   "--state-file": "stateFile", "--turn-files-dir": "turnFilesDir",
@@ -180,23 +178,21 @@ function createApp(options = {}) {
   const wakatime = createWakatime(getPaths, store.getConfig, store.logDebug);
 
   async function runHook() {
-    let response = options.app === "cursor" ? {} : { continue: true };
+    let response = { continue: true };
     try {
       const rawInput = await readStdin();
+      const deadline = Date.now() + 25000;
       let payload;
       try { payload = JSON.parse(rawInput); } catch { return; }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) { return; }
-      const isCursor = options.app === "cursor";
       const event = payload.hook_event_name;
-      const workspaceRoots = isCursor && Array.isArray(payload.workspace_roots)
-        ? payload.workspace_roots.filter((root) => typeof root === "string" && path.isAbsolute(root)) : [];
-      const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : workspaceRoots[0] || process.cwd();
-      if (event === (isCursor ? "afterFileEdit" : "PostToolUse")) {
+      const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+      if (event === "PostToolUse") {
         response = {};
         store.remember(payload, extractEditedFilesFromHookPayload(payload, cwd));
         return;
       }
-      if (event && event !== (isCursor ? "stop" : "Stop")) { response = {}; return; }
+      if (event && event !== "Stop") { response = {}; return; }
       const state = store.readState();
       const queue = store.claim(payload, state);
       let consumed = false;
@@ -208,22 +204,10 @@ function createApp(options = {}) {
         }
         const raw = resolveProjectRootRaw(cwd);
         const primary = getPrimaryWorktreeRoot(raw);
-        let tracked;
-        if (isCursor && workspaceRoots.length) {
-          const roots = workspaceRoots.map((root) => {
-            const rawRoot = resolveProjectRootRaw(root);
-            return { workspace: root, raw: rawRoot, primary: getPrimaryWorktreeRoot(rawRoot) };
-          }).sort((a, b) => b.workspace.length - a.workspace.length);
-          tracked = queue.files.flatMap((file) => {
-            const root = roots.find((candidate) => isInsideDir(file.path, candidate.workspace));
-            if (!root) return [];
-            return filterTrackableFiles([file], root.workspace, store.logDebug, root.primary, root.raw)
-              .map((item) => ({ ...item, projectRoot: root.primary }));
-          });
-        } else tracked = filterTrackableFiles(queue.files, cwd, store.logDebug, primary, raw);
+        const tracked = filterTrackableFiles(queue.files, cwd, store.logDebug, primary, raw);
         const signature = tracked.length ? buildSignature(tracked, cwd) : appSignature;
         if (!store.shouldSend(signature, state)) { consumed = true; return; }
-        const result = wakatime.sendTurn(tracked, primary);
+        const result = wakatime.sendTurn(tracked, primary, deadline);
         if (result.ok) {
           store.recordHeartbeat(signature, payload);
           consumed = true;
@@ -241,7 +225,7 @@ function createApp(options = {}) {
     const { codexHooks } = paths;
 
     const existing = readJson(codexHooks);
-    validateHookConfig(existing, paths.app);
+    validateHookConfig(existing);
 
     ensureConfigFile(paths);
     ensureWakatimeAiSyncEnabled(paths);
@@ -252,19 +236,6 @@ function createApp(options = {}) {
 
     const config = existing || { hooks: {} };
 
-    if (paths.app === "cursor") {
-      if (existing) writeJson(`${codexHooks}.bak`, existing);
-      config.version = config.version ?? 1;
-      config.hooks = { ...(config.hooks || {}) };
-      const { command } = buildHookEntry(paths);
-      for (const event of ["afterFileEdit", "stop"]) {
-        const entries = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-        config.hooks[event] = [...entries.filter((entry) => !isOurHookEntry(entry)), { command }];
-      }
-      writeJson(codexHooks, config);
-      console.log(`Installed Cursor hooks at ${codexHooks}`);
-      return;
-    }
     const stopHooks = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : [];
     const postToolUseHooks = Array.isArray(config.hooks?.PostToolUse) ? config.hooks.PostToolUse : [];
 
@@ -294,25 +265,9 @@ function createApp(options = {}) {
   }
 
   function uninstall() {
-    const { codexHooks, app } = getPaths();
+    const { codexHooks } = getPaths();
     const existing = readJson(codexHooks);
-    validateHookConfig(existing, app);
-
-    if (app === "cursor") {
-      if (!existing) {
-        console.log("No Cursor hook config found.");
-        return;
-      }
-      const hooks = { ...(existing.hooks || {}) };
-      for (const event of ["afterFileEdit", "stop"]) {
-        if (!Array.isArray(hooks[event])) continue;
-        hooks[event] = hooks[event].filter((entry) => !isOurHookEntry(entry));
-        if (!hooks[event].length) delete hooks[event];
-      }
-      writeJson(codexHooks, { ...existing, hooks });
-      console.log(`Removed Cursor hook entries from ${codexHooks}`);
-      return;
-    }
+    validateHookConfig(existing);
 
     if (!existing?.hooks?.Stop && !existing?.hooks?.PostToolUse) {
       console.log("No Codex hook config found.");
@@ -342,8 +297,6 @@ function createApp(options = {}) {
 
     console.log(JSON.stringify({
       version: VERSION,
-      app: paths.app,
-      hooksFile: paths.hooksFile,
       runtime: paths.runtime,
       rootDir: ROOT_DIR,
       binPath: BIN_PATH,
@@ -354,14 +307,12 @@ function createApp(options = {}) {
       configFile: paths.configFile,
       config: readConfig(paths.configFile),
       wakatimeCli: paths.wakatimeCli,
-      wakatimePlugin: buildPluginString({ app: options.app }),
+      wakatimePlugin: buildPluginString(),
       wakatimeAiSyncDisabled: isWakatimeAiSyncDisabled(paths),
       checks: {
         ...getSetupChecks(paths),
       },
-      installedCommand: paths.app === "cursor"
-        ? hookConfig?.hooks?.stop?.find(isOurHookEntry)?.command || null
-        : hookConfig?.hooks?.Stop?.flatMap((group) => group.hooks || []).find(isOurHookEntry)?.command || null,
+      installedCommand: hookConfig?.hooks?.Stop?.flatMap((group) => group.hooks || []).find(isOurHookEntry)?.command || null,
     }, null, 2));
   }
 
@@ -370,8 +321,6 @@ function createApp(options = {}) {
     const checks = getSetupChecks(paths);
 
     console.log(JSON.stringify({
-      app: paths.app,
-      hooksFile: paths.hooksFile,
       runtime: paths.runtime,
       codexHooks: paths.codexHooks,
       wakatimeCli: paths.wakatimeCli,
@@ -379,7 +328,7 @@ function createApp(options = {}) {
       configFile: paths.configFile,
       turnFilesDir: paths.turnFilesDir,
       config: readConfig(paths.configFile),
-      wakatimePlugin: buildPluginString({ app: options.app }),
+      wakatimePlugin: buildPluginString(),
       wakatimeAiSyncDisabled: isWakatimeAiSyncDisabled(paths),
       checks,
     }, null, 2));
@@ -389,9 +338,10 @@ function createApp(options = {}) {
   }
 
   function test(targetPath) {
+    const deadline = Date.now() + 25000;
     const cwd = targetPath || process.cwd();
     const projectRoot = resolveProjectRoot(cwd);
-    const result = wakatime.sendTurn([], projectRoot);
+    const result = wakatime.sendTurn([], projectRoot, deadline);
     console.log(JSON.stringify({ ...result, project: files.basenameAny(projectRoot), projectRoot, cwd }, null, 2));
     if (!result.ok) process.exitCode = 1;
   }
@@ -401,7 +351,6 @@ function createApp(options = {}) {
 async function run(argv) {
   const [command, ...rest] = argv;
   const options = parseOptions(rest);
-  if (options.app && !["codex", "cursor"].includes(options.app)) throw new Error(`Unsupported app: ${options.app}`);
   const app = createApp(options);
   switch (command) {
     case "hook":
@@ -417,7 +366,7 @@ async function run(argv) {
     case "doctor": return app.doctor();
     case "test": return app.test(options.rest[0]);
     default:
-      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--app codex|cursor] [--skip-checks]");
+      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--skip-checks]");
   }
 }
 

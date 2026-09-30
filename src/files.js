@@ -170,12 +170,6 @@ function getToolInputText(toolInput) {
 }
 
 function extractEditedFilesFromHookPayload(payload, cwd) {
-  if (payload?.hook_event_name === "afterFileEdit") {
-    return typeof payload.file_path === "string" && isValidFilePath(payload.file_path)
-      ? [{ path: normalizePath(payload.file_path, cwd), isWrite: true }]
-      : [];
-  }
-
   if (!payload || payload.hook_event_name !== "PostToolUse") {
     return [];
   }
@@ -195,8 +189,8 @@ function extractEditedFilesFromHookPayload(payload, cwd) {
 }
 
 function getTurnStateKey(payload) {
-  const sessionId = payload?.conversation_id || payload?.session_id;
-  const turnId = payload?.generation_id || payload?.turn_id;
+  const sessionId = payload?.session_id;
+  const turnId = payload?.turn_id;
   if (typeof sessionId !== "string" || !sessionId || typeof turnId !== "string" || !turnId) {
     return null;
   }

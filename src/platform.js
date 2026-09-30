@@ -212,23 +212,7 @@ function getLinuxArch(arch = process.arch) {
 }
 
 function resolveRuntimePaths(options = {}) {
-  const app = options.app || "codex";
-  if (!["codex", "cursor"].includes(app)) {
-    throw new Error(`Unsupported app: ${app}. Expected codex or cursor.`);
-  }
-  const paths = resolvePlatformPaths(options);
-  const pathApi = paths.runtime === "windows" ? path.win32 : path;
-  const join = pathApi.join;
-  const appHome = paths.windowsHome
-    ? (paths.runtime === "windows" ? paths.windowsHome.win : paths.windowsHome.wsl)
-    : paths.homeDir;
-  if (app === "cursor") {
-    paths.codexHooks = options.cursorHooks || join(appHome, ".cursor", "hooks.json");
-    paths.codexLog = options.codexLog || join(appHome, ".cursor", "codex-app-wakatime.log");
-    paths.stateFile = options.stateFile || join(pathApi.dirname(paths.stateFile), "cursor-app-wakatime.json");
-    paths.turnFilesDir = options.turnFilesDir || join(pathApi.dirname(paths.turnFilesDir), "cursor-app-wakatime-turns");
-  }
-  return { ...paths, app, hooksFile: paths.codexHooks };
+  return resolvePlatformPaths(options);
 }
 
 function resolvePlatformPaths(options = {}) {

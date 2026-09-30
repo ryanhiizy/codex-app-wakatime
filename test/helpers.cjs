@@ -20,7 +20,7 @@ function fixture(t) {
   delete env.CODEX_WAKATIME_PLUGIN;
   const options = ["--home", home, "--wakatime-cli", binary, "--wakatime-config", config,
     "--wakatime-log", path.join(home, "wakatime.log"),
-    "--codex-hooks", path.join(home, "hooks.json"), "--cursor-hooks", path.join(home, "cursor-hooks.json"),
+    "--codex-hooks", path.join(home, "hooks.json"),
     "--state-file", path.join(home, "state.json"), "--turn-files-dir", path.join(home, "turns"),
     "--config-file", settings, "--codex-log", path.join(home, "hook.log")];
   const run = (args, payload, extraEnv) => spawnSync(process.execPath, [bin, ...args, ...options], {

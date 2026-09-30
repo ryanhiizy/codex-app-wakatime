@@ -79,8 +79,8 @@ test("install and uninstall preserve unrelated hook groups and metadata", (t) =>
 });
 
 test("every value option rejects missing arguments, while -- preserves literal positional paths", () => {
-  for (const flag of ["--app", "--home", "--wakatime-cli", "--wakatime-config", "--wakatime-log",
-    "--codex-hooks", "--cursor-hooks", "--state-file", "--turn-files-dir", "--config-file", "--codex-log"]) {
+  for (const flag of ["--home", "--wakatime-cli", "--wakatime-config", "--wakatime-log",
+    "--codex-hooks", "--state-file", "--turn-files-dir", "--config-file", "--codex-log"]) {
     assert.throws(() => parseOptions([flag]), /Missing value/);
     assert.throws(() => parseOptions([flag, "--skip-checks"]), /Missing value/);
   }

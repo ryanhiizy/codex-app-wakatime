@@ -73,14 +73,12 @@ test("repeated empty stops are rate limited without launching WakaTime", (t) => 
 
 test("malformed payloads return valid host responses without heartbeats", (t) => {
   const f = fixture(t);
-  for (const app of ["codex", "cursor"]) {
-    for (const input of ["{", "null", "[]", "42", '"text"']) {
-      const result = spawnSync(process.execPath, [bin, "hook", "--app", app, ...f.options], {
-        encoding: "utf8", input, env: f.env,
-      });
-      assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), app === "cursor" ? {} : { continue: true });
-    }
+  for (const input of ["{", "null", "[]", "42", '"text"']) {
+    const result = spawnSync(process.execPath, [bin, "hook", ...f.options], {
+      encoding: "utf8", input, env: f.env,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { continue: true });
   }
   assert.equal(f.calls().length, 0);
 });
@@ -96,27 +94,4 @@ test("unavailable queue storage still responds to both edit and stop hooks", (t)
     assert.match(result.stderr, /WakaTime hook:/);
   }
   assert.equal(f.calls().length, 0);
-});
-
-test("Cursor batches separately for each workspace without changing transcript settings", (t) => {
-  const f = fixture(t);
-  const roots = [path.join(f.home, "one"), path.join(f.home, "two")];
-  roots.forEach((root) => fs.mkdirSync(root));
-  const payload = { conversation_id: "conversation", generation_id: "generation", workspace_roots: roots };
-  for (const root of roots) {
-    for (let i = 0; i < 2; i++) {
-      const file = path.join(root, `file-${i}.js`);
-      fs.writeFileSync(file, "const value = 1;");
-      assert.equal(f.run(["hook", "--app", "cursor"], { ...payload, hook_event_name: "afterFileEdit", file_path: file }).status, 0);
-    }
-  }
-  assert.equal(f.run(["hook", "--app", "cursor"], { ...payload, hook_event_name: "stop" }).status, 0);
-  const calls = f.calls();
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls.map((call) => arg(call, "--project-folder")), roots);
-  calls.forEach((call) => {
-    assert.match(arg(call, "--plugin"), /^cursor\//);
-    assert.equal(call.args.includes("--sync-ai-disabled"), false);
-    assert.equal(JSON.parse(call.input).length, 1);
-  });
 });
