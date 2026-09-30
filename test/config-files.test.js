@@ -115,9 +115,10 @@ test("linked worktrees retain a readable local file for newly created canonical 
   t.after(() => spawnSync("git", ["-C", repo, "worktree", "remove", "--force", worktree]));
   const created = path.join(worktree, "new.js");
   fs.writeFileSync(created, "const value = 1;\n");
-  // Git may report a different path casing on Windows; use the resolved primary path.
+  // Git can expand a Windows 8.3 alias. Compare directory identity, not spelling.
   const primary = getPrimaryWorktreeRoot(worktree);
-  assert.equal(fs.realpathSync(primary).toLowerCase(), fs.realpathSync(repo).toLowerCase());
+  assert.equal(fs.statSync(primary).dev, fs.statSync(repo).dev);
+  assert.equal(fs.statSync(primary).ino, fs.statSync(repo).ino);
   assert.deepEqual(filterTrackableFiles([{ path: created, isWrite: true }], worktree, () => {}, primary, worktree),
     [{ path: path.join(primary, "new.js"), localFile: created, isWrite: true }]);
 });
