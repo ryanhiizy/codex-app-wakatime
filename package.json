@@ -1,7 +1,7 @@
 {
   "name": "codex-app-wakatime",
   "version": "0.1.16",
-  "description": "WakaTime heartbeats for Codex desktop app and Cursor hooks.",
+  "description": "WakaTime heartbeats for Codex desktop app hooks.",
   "main": "./src/cli.js",
   "bin": {
     "codex-app-wakatime": "bin/codex-app-wakatime.js"
@@ -28,7 +28,6 @@
     "ai",
     "codex",
     "openai-codex",
-    "cursor",
     "linux",
     "wakatime",
     "hooks"

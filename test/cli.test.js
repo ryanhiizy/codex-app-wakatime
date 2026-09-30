@@ -262,14 +262,14 @@ test("install enables WakaTime global AI transcript sync", () => {
 test("buildPluginString distinguishes the Codex agent from the desktop editor", () => {
   assert.equal(cli.buildPluginString(), `Codex codex-app/${packageJson.version}`);
   assert.equal(cli.buildPluginString({ includeAgent: false }), `codex-app/${packageJson.version}`);
-  assert.equal(cli.buildPluginString({ editorName: "cursor" }), `cursor/${packageJson.version}`);
+  assert.equal(cli.buildPluginString({ editorName: "custom-editor" }), `custom-editor/${packageJson.version}`);
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
   assert.equal(cli.buildPluginString({
-    editorName: "cursor",
+    editorName: "custom-editor",
     pluginName: "codex-wakatime",
-  }), `cursor/1.0.0 codex-wakatime/${packageJson.version}`);
+  }), `custom-editor/1.0.0 codex-wakatime/${packageJson.version}`);
 });
 
 test("filterTrackableFiles keeps only existing files inside the project", () => {
@@ -404,40 +404,7 @@ test("Linux runtime distinguishes WSL and uses CLI overrides or PATH", () => {
   }
 });
 
-test("Cursor install is idempotent and uninstall preserves other hooks", () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-cursor-"));
-  const options = { platform: "linux", isWsl: false, app: "cursor", homeDir: home, skipChecks: true };
-  const paths = cli.resolveRuntimePaths(options);
-  const original = { version: 1, custom: true, hooks: {
-    stop: [{ command: "other-tool" }], beforeReadFile: [{ command: "read-tool" }],
-  } };
-  fs.mkdirSync(path.dirname(paths.hooksFile), { recursive: true });
-  fs.writeFileSync(paths.hooksFile, JSON.stringify(original));
-  const originalLog = console.log;
-  console.log = () => {};
-  try {
-    cli.install(options);
-    assert.deepEqual(JSON.parse(fs.readFileSync(`${paths.hooksFile}.bak`, "utf8")), original);
-    cli.install(options);
-    const installed = JSON.parse(fs.readFileSync(paths.hooksFile, "utf8"));
-    assert.equal(installed.hooks.stop.length, 2);
-    assert.equal(installed.hooks.afterFileEdit.length, 1);
-    assert.match(installed.hooks.stop[1].command, /--app 'cursor'/);
-    assert.equal(paths.hooksFile, path.join(home, ".cursor", "hooks.json"));
-    assert.notEqual(paths.stateFile, cli.resolveRuntimePaths({ ...options, app: "codex" }).stateFile);
-    assert.notEqual(paths.turnFilesDir, cli.resolveRuntimePaths({ ...options, app: "codex" }).turnFilesDir);
-    cli.uninstall(options);
-    assert.deepEqual(JSON.parse(fs.readFileSync(paths.hooksFile, "utf8")), original);
-    fs.writeFileSync(paths.hooksFile, "invalid json");
-    assert.throws(() => cli.install(options), SyntaxError);
-    assert.equal(fs.readFileSync(paths.hooksFile, "utf8"), "invalid json");
-  } finally {
-    console.log = originalLog;
-    fs.rmSync(home, { recursive: true, force: true });
-  }
-});
-
-test("installed Codex and Cursor hooks send file and project heartbeats through the selected CLI", () => {
+test("installed Codex hooks send file and project heartbeats through the selected CLI", () => {
   const { spawnSync } = require("node:child_process");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-hook-e2e-"));
   const capture = path.join(home, "heartbeats.jsonl");
@@ -452,70 +419,49 @@ test("installed Codex and Cursor hooks send file and project heartbeats through 
   const originalLog = console.log;
   console.log = () => {};
   try {
-    for (const app of ["codex", "cursor"]) {
-      const options = { platform: "linux", isWsl: false, app, homeDir: home, wakatimeCli: binary, skipChecks: true };
-      cli.install(options);
-      const paths = cli.resolveRuntimePaths(options);
-      const hooks = JSON.parse(fs.readFileSync(paths.hooksFile, "utf8")).hooks;
-      const editCommand = app === "cursor" ? hooks.afterFileEdit[0].command : hooks.PostToolUse[0].hooks[0].command;
-      const stopCommand = app === "cursor" ? hooks.stop[0].command : hooks.Stop[0].hooks[0].command;
-      const base = app === "cursor" ? { conversation_id: "c", generation_id: "g", workspace_roots: [project] }
-        : { session_id: "c", turn_id: "g", cwd: project };
-      const invoke = (command, payload) => {
-        const result = spawnSync("/bin/sh", ["-c", command], { input: JSON.stringify(payload), encoding: "utf8", cwd: home });
-        assert.equal(result.status, 0, result.stderr);
-        assert.deepEqual(JSON.parse(result.stdout), app === "cursor" ? {} : payload.hook_event_name === "PostToolUse" ? {} : { continue: true });
-      };
-      invoke(editCommand, { ...base, hook_event_name: app === "cursor" ? "afterFileEdit" : "PostToolUse",
-        file_path: source, tool_name: "Edit", tool_input: { file_path: source } });
-      invoke(stopCommand, { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop" });
-      let calls = directCalls();
-      const fileCall = calls.at(-1);
-      assert.equal(fileCall[fileCall.indexOf("--entity") + 1], source);
-      assert.equal(fileCall[fileCall.indexOf("--project-folder") + 1], project);
-      assert.equal(fileCall[fileCall.indexOf("--plugin") + 1], `${app === "cursor" ? "cursor" : "Codex codex-app"}/${packageJson.version}`);
-      assert.equal(fileCall.includes("--sync-ai-disabled"), app === "codex");
-      if (app === "codex") {
-        const syncCalls = captured().filter((args) => args.includes("--sync-ai-activity"));
-        assert.equal(syncCalls.length, 1);
-        assert.equal(syncCalls[0][syncCalls[0].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
-        assert.ok(!syncCalls[0].includes("--sync-ai-disabled"));
-      }
-      assert.ok(fileCall.includes("--write"));
-      assert.deepEqual(fs.readdirSync(paths.turnFilesDir), []);
-      if (app === "cursor") {
-        const secondProject = path.join(home, "second project");
-        fs.mkdirSync(secondProject);
-        const secondFile = path.join(secondProject, "other.js");
-        fs.writeFileSync(secondFile, "export {};\n");
-        const multiRoot = { ...base, generation_id: "multi", workspace_roots: [project, secondProject] };
-        invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: secondFile });
-        invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: binary });
-        invoke(stopCommand, { ...multiRoot, hook_event_name: "stop" });
-        const multiCalls = directCalls();
-        assert.equal(multiCalls.length, calls.length + 1);
-        assert.equal(multiCalls.at(-1)[1], secondFile);
-        assert.equal(multiCalls.at(-1)[multiCalls.at(-1).indexOf("--project-folder") + 1], secondProject);
-      }
-      const stop = { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop", generation_id: "next", turn_id: "next" };
-      invoke(stopCommand, stop);
-      calls = directCalls();
-      assert.equal(calls.at(-1)[1], app === "cursor" ? "Cursor" : "Codex");
-      const count = captured().length;
-      invoke(stopCommand, stop);
-      assert.equal(captured().length, count);
-    }
+    const options = { platform: "linux", isWsl: false, homeDir: home, wakatimeCli: binary, skipChecks: true };
+    cli.install(options);
+    const paths = cli.resolveRuntimePaths(options);
+    const hooks = JSON.parse(fs.readFileSync(paths.codexHooks, "utf8")).hooks;
+    const editCommand = hooks.PostToolUse[0].hooks[0].command;
+    const stopCommand = hooks.Stop[0].hooks[0].command;
+    const base = { session_id: "c", turn_id: "g", cwd: project };
+    const invoke = (command, payload) => {
+      const result = spawnSync("/bin/sh", ["-c", command], { input: JSON.stringify(payload), encoding: "utf8", cwd: home });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), payload.hook_event_name === "PostToolUse" ? {} : { continue: true });
+    };
+    invoke(editCommand, { ...base, hook_event_name: "PostToolUse",
+      file_path: source, tool_name: "Edit", tool_input: { file_path: source } });
+    invoke(stopCommand, { ...base, hook_event_name: "Stop" });
+    let calls = directCalls();
+    const fileCall = calls.at(-1);
+    assert.equal(fileCall[fileCall.indexOf("--entity") + 1], source);
+    assert.equal(fileCall[fileCall.indexOf("--project-folder") + 1], project);
+    assert.equal(fileCall[fileCall.indexOf("--plugin") + 1], `Codex codex-app/${packageJson.version}`);
+    assert.equal(fileCall.includes("--sync-ai-disabled"), true);
+    const syncCalls = captured().filter((args) => args.includes("--sync-ai-activity"));
+    assert.equal(syncCalls.length, 1);
+    assert.equal(syncCalls[0][syncCalls[0].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
+    assert.ok(!syncCalls[0].includes("--sync-ai-disabled"));
+    assert.ok(fileCall.includes("--write"));
+    assert.deepEqual(fs.readdirSync(paths.turnFilesDir), []);
+    const stop = { ...base, hook_event_name: "Stop", turn_id: "next" };
+    invoke(stopCommand, stop);
+    calls = directCalls();
+    assert.equal(calls.at(-1)[1], "Codex");
+    const count = captured().length;
+    invoke(stopCommand, stop);
+    assert.equal(captured().length, count);
   } finally {
     console.log = originalLog;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
-test("app selection validates options", () => {
-  assert.deepEqual(cli.parseOptions(["--app", "cursor"]).app, "cursor");
-  assert.equal(cli.parseOptions(["--app=codex"]).app, "codex");
-  assert.throws(() => cli.parseOptions(["--app"]), /Missing value/);
-  assert.throws(() => cli.resolveRuntimePaths({ app: "unknown" }), /Unsupported app/);
+test("unsupported app selection is rejected", () => {
+  assert.throws(() => cli.parseOptions(["--app", "other"]), /Unknown option: --app/);
+  assert.throws(() => cli.parseOptions(["--app=other"]), /Unknown option: --app/);
 });
 
 test("failed standalone sync preserves transcript parsing for the direct send", () => {

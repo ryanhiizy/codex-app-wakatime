@@ -343,12 +343,6 @@ function getToolInputText(toolInput) {
 }
 
 function extractEditedFilesFromHookPayload(payload, cwd) {
-  if (payload?.hook_event_name === "afterFileEdit") {
-    return typeof payload.file_path === "string" && isValidFilePath(payload.file_path)
-      ? [{ path: normalizePath(payload.file_path, cwd), isWrite: true }]
-      : [];
-  }
-
   if (!payload || payload.hook_event_name !== "PostToolUse") {
     return [];
   }
@@ -368,13 +362,11 @@ function extractEditedFilesFromHookPayload(payload, cwd) {
 }
 
 function getTurnStateKey(payload) {
-  const sessionId = payload?.conversation_id || payload?.session_id;
-  const turnId = payload?.generation_id || payload?.turn_id;
-  if (!sessionId || !turnId) {
+  if (!payload?.session_id || !payload?.turn_id) {
     return null;
   }
 
-  return `${sessionId}:${turnId}`;
+  return `${payload.session_id}:${payload.turn_id}`;
 }
 
 function mergeFiles(existingFiles, newFiles) {
@@ -835,25 +827,6 @@ function getLinuxArch(arch = process.arch) {
 }
 
 function resolveRuntimePaths(options = {}) {
-  const app = options.app || "codex";
-  if (!["codex", "cursor"].includes(app)) {
-    throw new Error(`Unsupported app: ${app}. Expected codex or cursor.`);
-  }
-  const paths = resolvePlatformPaths(options);
-  const join = paths.runtime === "windows" ? path.win32.join : path.join;
-  const appHome = paths.windowsHome
-    ? (paths.runtime === "windows" ? paths.windowsHome.win : paths.windowsHome.wsl)
-    : paths.homeDir;
-  if (app === "cursor") {
-    paths.codexHooks = options.cursorHooks || join(appHome, ".cursor", "hooks.json");
-    paths.codexLog = options.codexLog || join(appHome, ".cursor", "codex-app-wakatime.log");
-    paths.stateFile = options.stateFile || join(path.dirname(paths.stateFile), "cursor-app-wakatime.json");
-    paths.turnFilesDir = options.turnFilesDir || join(path.dirname(paths.turnFilesDir), "cursor-app-wakatime-turns");
-  }
-  return { ...paths, app, hooksFile: paths.codexHooks };
-}
-
-function resolvePlatformPaths(options = {}) {
   const runtime = detectRuntime(options);
 
   if (runtime === "macos" || runtime === "linux") {
@@ -1080,8 +1053,7 @@ function buildWakatimeLaunch(wakatimeCli) {
 }
 
 function buildPluginString(options = {}) {
-  const editorName = options.editorName || process.env.CODEX_WAKATIME_EDITOR
-    || (activeOptions.app === "cursor" ? "cursor" : DEFAULT_WAKATIME_EDITOR);
+  const editorName = options.editorName || process.env.CODEX_WAKATIME_EDITOR || DEFAULT_WAKATIME_EDITOR;
   const pluginName = options.pluginName || process.env.CODEX_WAKATIME_PLUGIN || "";
 
   if (pluginName) {
@@ -1094,14 +1066,16 @@ function buildPluginString(options = {}) {
   return `${agent}${editorName}/${VERSION}`;
 }
 
-function syncAiTranscripts(paths = getPaths()) {
+function syncAiTranscripts(paths = getPaths(), deadline = Date.now() + 25000) {
   if (!buildPluginString().startsWith("Codex ")) return false;
+  const timeout = Math.min(10000, deadline - Date.now());
+  if (timeout <= 0) return false;
   const launch = buildWakatimeLaunch(paths.wakatimeCli);
   const result = spawnSync(launch.command, [...launch.argsPrefix,
     "--sync-ai-activity", "--plugin", buildPluginString({ includeAgent: false }),
     "--config", paths.wakatimeConfig, "--log-file", paths.wakatimeLog,
-    "--timeout", "30",
-  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    "--timeout", String(Math.max(1, Math.floor(timeout / 1000))),
+  ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true, timeout });
   if (result.error || result.status !== 0) {
     logDebug(`AI transcript sync failed: ${result.error?.message || result.stderr || result.status}`);
     return false;
@@ -1110,6 +1084,8 @@ function syncAiTranscripts(paths = getPaths()) {
 }
 
 function sendHeartbeat(params, paths = getPaths()) {
+  const timeout = Math.min(25000, (params.deadline ?? Date.now() + 25000) - Date.now());
+  if (timeout <= 0) return { ok: false, reason: "hook_timeout" };
   if (!commandOrFileExists(paths.wakatimeCli)) {
     logDebug(`missing wakatime cli at ${paths.wakatimeCli}`);
     return { ok: false, reason: "missing_wakatime_cli" };
@@ -1131,7 +1107,7 @@ function sendHeartbeat(params, paths = getPaths()) {
     "--heartbeat-rate-limit-seconds",
     "60",
     "--timeout",
-    "30",
+    String(Math.max(1, Math.floor(timeout / 1000))),
   ];
 
   // Transcripts are synced once separately with the unprefixed identity. Letting
@@ -1160,6 +1136,7 @@ function sendHeartbeat(params, paths = getPaths()) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    timeout,
   });
 
   if (result.error) {
@@ -1176,14 +1153,15 @@ function sendHeartbeat(params, paths = getPaths()) {
   return { ok: true, entity: params.entity };
 }
 
-function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false) {
+function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false, deadline) {
   const paths = getPaths();
   const project = basenameAny(projectRoot);
   return sendHeartbeat({
-    entity: paths.app === "cursor" ? "Cursor" : "Codex",
+    entity: "Codex",
     entityType: "app",
     project,
     transcriptsSynced,
+    deadline,
   }, paths);
 }
 
@@ -1198,7 +1176,7 @@ function limitFilesForHeartbeats(files, maxFileHeartbeats = getMaxFileHeartbeats
   return files.slice(0, maxFileHeartbeats);
 }
 
-function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false) {
+function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false, deadline) {
   const paths = getPaths();
   const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
   const filesToSend = limitFilesForHeartbeats(files);
@@ -1210,15 +1188,14 @@ function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd), t
 
   for (const file of filesToSend) {
     const heartbeatPath = toHeartbeatPath(file.path, paths);
-    const fileProjectFolder = file.projectRoot
-      ? toHeartbeatPath(file.projectRoot, paths) : heartbeatProjectFolder;
     logDebug(`sending file heartbeat path=${heartbeatPath} isWrite=${file.isWrite}`);
     const result = sendHeartbeat({
       entity: heartbeatPath,
       entityType: "file",
-      projectFolder: fileProjectFolder,
+      projectFolder: heartbeatProjectFolder,
       isWrite: file.isWrite,
       transcriptsSynced,
+      deadline,
     }, paths);
 
     if (result.ok) {
@@ -1252,7 +1229,6 @@ function buildHookEntry(paths = getPaths(), options = {}) {
   ];
 
   for (const [flag, value] of [
-    ["--app", paths.app],
     ["--wakatime-cli", paths.wakatimeCli],
     ["--wakatime-config", paths.wakatimeConfig],
     ["--state-file", paths.stateFile],
@@ -1301,18 +1277,7 @@ function parseOptions(args) {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
 
-    if (arg === "--app" || arg === "--cursor-hooks") {
-      const key = arg === "--app" ? "app" : "cursorHooks";
-      if (!args[index + 1] || args[index + 1].startsWith("--")) {
-        throw new Error(`Missing value for ${arg}`);
-      }
-      options[key] = args[++index];
-    } else if (arg.startsWith("--app=")) {
-      options.app = arg.slice("--app=".length);
-      if (!options.app) throw new Error("Missing value for --app");
-    } else if (arg.startsWith("--cursor-hooks=")) {
-      options.cursorHooks = arg.slice("--cursor-hooks=".length);
-    } else if (arg === "--skip-checks") {
+    if (arg === "--skip-checks") {
       options.skipChecks = true;
     } else if (arg === "--home") {
       options.homeDir = args[index + 1];
@@ -1354,6 +1319,8 @@ function parseOptions(args) {
       index += 1;
     } else if (arg.startsWith("--codex-log=")) {
       options.codexLog = arg.slice("--codex-log=".length);
+    } else if (arg.startsWith("--")) {
+      throw new Error(`Unknown option: ${arg}`);
     } else {
       options.rest.push(arg);
     }
@@ -1391,7 +1358,6 @@ function warnOnInvalidSetup(paths) {
 
 function getSetupChecks(paths) {
   return {
-    hooksFileExists: fs.existsSync(paths.hooksFile || paths.codexHooks),
     codexHooksExists: fs.existsSync(paths.codexHooks),
     wakatimeCliExists: commandOrFileExists(paths.wakatimeCli),
     wakatimeConfigExists: fs.existsSync(toReadableHostPath(paths.wakatimeConfig)),
@@ -1402,11 +1368,11 @@ function getSetupChecks(paths) {
 async function runHook(options = {}) {
   activeOptions = options;
   const rawInput = await readStdin();
-  const isCursor = options.app === "cursor";
-  const respond = isCursor ? writeOk : writeContinue;
+  // Reserve time for state cleanup and the response before the host's 30s timeout.
+  const deadline = Date.now() + 25000;
 
   if (!rawInput.trim()) {
-    respond();
+    writeContinue();
     return;
   }
 
@@ -1415,13 +1381,13 @@ async function runHook(options = {}) {
   try {
     payload = JSON.parse(rawInput);
   } catch (error) {
-    respond();
+    writeContinue();
     return;
   }
-  const cwd = payload.cwd || (isCursor && payload.workspace_roots?.[0]) || process.cwd();
+  const cwd = payload.cwd || process.cwd();
   const eventName = payload.hook_event_name;
 
-  if (eventName === (isCursor ? "afterFileEdit" : "PostToolUse")) {
+  if (eventName === "PostToolUse") {
     const files = extractEditedFilesFromHookPayload(payload, cwd);
 
     if (files.length > 0) {
@@ -1434,7 +1400,7 @@ async function runHook(options = {}) {
 
   logDebug(`received input bytes=${rawInput.length}`);
 
-  if (eventName && eventName !== (isCursor ? "stop" : "Stop")) {
+  if (eventName && eventName !== "Stop") {
     logDebug(`skipped unsupported hook event=${eventName}`);
     writeOk();
     return;
@@ -1447,24 +1413,13 @@ async function runHook(options = {}) {
   if (rememberedFiles.length === 0 && !shouldSendHeartbeat(appSignature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit");
     clearTurnFiles(payload, state);
-    respond();
+    writeContinue();
     return;
   }
 
   const rawProjectRoot = resolveProjectRootRaw(cwd);
   const projectRoot = getPrimaryWorktreeRoot(rawProjectRoot);
-  let files = filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
-  if (isCursor && Array.isArray(payload.workspace_roots)) {
-    const roots = payload.workspace_roots
-      .filter((root) => typeof root === "string" && path.isAbsolute(root))
-      .map((root) => ({ raw: root, primary: getPrimaryWorktreeRoot(resolveProjectRootRaw(root)) }));
-    files = rememberedFiles.flatMap((file) => {
-      const root = roots.find((candidate) => isInsideDir(file.path, candidate.raw));
-      if (!root) return [];
-      return filterTrackableFiles([file], root.raw, logDebug, root.primary, root.raw)
-        .map((tracked) => ({ ...tracked, projectRoot: root.primary }));
-    });
-  }
+  const files = filterTrackableFiles(rememberedFiles, cwd, logDebug, projectRoot, rawProjectRoot);
   logDebug(`project root=${projectRoot} tracked edited files=${files.length}`);
 
   const signature = files.length === 0 ? appSignature : buildSignature(files, cwd);
@@ -1472,18 +1427,18 @@ async function runHook(options = {}) {
   if (!shouldSendHeartbeat(signature, false, state)) {
     logDebug("skipped heartbeat due to local rate limit");
     clearTurnFiles(payload, state);
-    respond();
+    writeContinue();
     return;
   }
 
   let sent = false;
 
-  const transcriptsSynced = syncAiTranscripts();
+  const transcriptsSynced = syncAiTranscripts(undefined, deadline);
 
   if (files.length > 0) {
-    sent = sendFileHeartbeats(files, cwd, projectRoot, transcriptsSynced);
+    sent = sendFileHeartbeats(files, cwd, projectRoot, transcriptsSynced, deadline);
   } else {
-    sent = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced).ok;
+    sent = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced, deadline).ok;
   }
 
   if (sent) {
@@ -1491,7 +1446,7 @@ async function runHook(options = {}) {
   }
 
   clearTurnFiles(payload, state);
-  respond();
+  writeContinue();
 }
 
 function install(options = {}) {
@@ -1508,19 +1463,6 @@ function install(options = {}) {
   const existing = readJson(codexHooks);
   const config = existing || { hooks: {} };
 
-  if (paths.app === "cursor") {
-    if (existing) writeJson(`${codexHooks}.bak`, existing);
-    config.version = config.version ?? 1;
-    config.hooks = { ...(config.hooks || {}) };
-    const { command } = buildHookEntry(paths);
-    for (const event of ["afterFileEdit", "stop"]) {
-      const entries = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
-      config.hooks[event] = [...entries.filter((entry) => !isOurHookEntry(entry)), { command }];
-    }
-    writeJson(codexHooks, config);
-    console.log(`Installed Cursor hooks at ${codexHooks}`);
-    return;
-  }
   const stopHooks = Array.isArray(config.hooks?.Stop) ? config.hooks.Stop : [];
   const postToolUseHooks = Array.isArray(config.hooks?.PostToolUse) ? config.hooks.PostToolUse : [];
 
@@ -1550,24 +1492,8 @@ function install(options = {}) {
 }
 
 function uninstall(options = {}) {
-  const { codexHooks, app } = getPaths(options);
+  const { codexHooks } = getPaths(options);
   const existing = readJson(codexHooks);
-
-  if (app === "cursor") {
-    if (!existing) {
-      console.log("No Cursor hook config found.");
-      return;
-    }
-    const hooks = { ...(existing.hooks || {}) };
-    for (const event of ["afterFileEdit", "stop"]) {
-      if (!Array.isArray(hooks[event])) continue;
-      hooks[event] = hooks[event].filter((entry) => !isOurHookEntry(entry));
-      if (!hooks[event].length) delete hooks[event];
-    }
-    writeJson(codexHooks, { ...existing, hooks });
-    console.log(`Removed Cursor hook entries from ${codexHooks}`);
-    return;
-  }
 
   if (!existing?.hooks?.Stop && !existing?.hooks?.PostToolUse) {
     console.log("No Codex hook config found.");
@@ -1597,8 +1523,6 @@ function status(options = {}) {
 
   console.log(JSON.stringify({
     version: VERSION,
-    app: paths.app,
-    hooksFile: paths.hooksFile,
     runtime: paths.runtime,
     rootDir: ROOT_DIR,
     binPath: BIN_PATH,
@@ -1614,9 +1538,7 @@ function status(options = {}) {
     checks: {
       ...getSetupChecks(paths),
     },
-    installedCommand: paths.app === "cursor"
-      ? hookConfig?.hooks?.stop?.find(isOurHookEntry)?.command || null
-      : hookConfig?.hooks?.Stop?.flatMap((group) => group.hooks || []).find(isOurHookEntry)?.command || null,
+    installedCommand: hookConfig?.hooks?.Stop?.flatMap((group) => group.hooks || []).find(isOurHookEntry)?.command || null,
   }, null, 2));
 }
 
@@ -1625,8 +1547,6 @@ function doctor(options = {}) {
   const checks = getSetupChecks(paths);
 
   console.log(JSON.stringify({
-    app: paths.app,
-    hooksFile: paths.hooksFile,
     runtime: paths.runtime,
     codexHooks: paths.codexHooks,
     wakatimeCli: paths.wakatimeCli,
@@ -1644,10 +1564,11 @@ function doctor(options = {}) {
 }
 
 function test(targetPath) {
+  const deadline = Date.now() + 25000;
   const cwd = targetPath || process.cwd();
   const projectRoot = resolveProjectRoot(cwd);
-  const transcriptsSynced = syncAiTranscripts();
-  const result = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced);
+  const transcriptsSynced = syncAiTranscripts(undefined, deadline);
+  const result = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced, deadline);
   console.log(JSON.stringify({
     ...result,
     project: basenameAny(projectRoot),
@@ -1662,9 +1583,6 @@ async function run(argv) {
   const options = parseOptions(rest);
   activeOptions = options;
   cachedConfig = undefined;
-  if (options.app && !["codex", "cursor"].includes(options.app)) {
-    throw new Error(`Unsupported app: ${options.app}. Expected codex or cursor.`);
-  }
 
   switch (command) {
     case "hook":
@@ -1687,7 +1605,7 @@ async function run(argv) {
       test(options.rest[0]);
       return;
     default:
-      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--app codex|cursor] [--skip-checks]");
+      console.log("Usage: codex-app-wakatime <setup|install|uninstall|status|doctor|test|hook> [--skip-checks]");
   }
 }
 
