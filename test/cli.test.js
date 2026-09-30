@@ -259,8 +259,10 @@ test("install enables WakaTime global AI transcript sync", () => {
   }));
 });
 
-test("buildPluginString uses the WakaTime Codex identity", () => {
-  assert.equal(cli.buildPluginString(), `codex-app/${packageJson.version}`);
+test("buildPluginString distinguishes the Codex agent from the desktop editor", () => {
+  assert.equal(cli.buildPluginString(), `Codex codex-app/${packageJson.version}`);
+  assert.equal(cli.buildPluginString({ includeAgent: false }), `codex-app/${packageJson.version}`);
+  assert.equal(cli.buildPluginString({ editorName: "cursor" }), `cursor/${packageJson.version}`);
 });
 
 test("buildPluginString supports explicit identity overrides", () => {
@@ -445,6 +447,8 @@ test("installed Codex and Cursor hooks send file and project heartbeats through 
   const source = path.join(project, "main.js");
   fs.writeFileSync(source, "export {};\n");
   fs.writeFileSync(binary, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o755 });
+  const captured = () => fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+  const directCalls = () => captured().filter((args) => args.includes("--entity"));
   const originalLog = console.log;
   console.log = () => {};
   try {
@@ -465,11 +469,18 @@ test("installed Codex and Cursor hooks send file and project heartbeats through 
       invoke(editCommand, { ...base, hook_event_name: app === "cursor" ? "afterFileEdit" : "PostToolUse",
         file_path: source, tool_name: "Edit", tool_input: { file_path: source } });
       invoke(stopCommand, { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop" });
-      let calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+      let calls = directCalls();
       const fileCall = calls.at(-1);
       assert.equal(fileCall[fileCall.indexOf("--entity") + 1], source);
       assert.equal(fileCall[fileCall.indexOf("--project-folder") + 1], project);
-      assert.equal(fileCall[fileCall.indexOf("--plugin") + 1], `${app === "cursor" ? "cursor" : "codex-app"}/${packageJson.version}`);
+      assert.equal(fileCall[fileCall.indexOf("--plugin") + 1], `${app === "cursor" ? "cursor" : "Codex codex-app"}/${packageJson.version}`);
+      assert.equal(fileCall.includes("--sync-ai-disabled"), app === "codex");
+      if (app === "codex") {
+        const syncCalls = captured().filter((args) => args.includes("--sync-ai-activity"));
+        assert.equal(syncCalls.length, 1);
+        assert.equal(syncCalls[0][syncCalls[0].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
+        assert.ok(!syncCalls[0].includes("--sync-ai-disabled"));
+      }
       assert.ok(fileCall.includes("--write"));
       assert.deepEqual(fs.readdirSync(paths.turnFilesDir), []);
       if (app === "cursor") {
@@ -481,18 +492,18 @@ test("installed Codex and Cursor hooks send file and project heartbeats through 
         invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: secondFile });
         invoke(editCommand, { ...multiRoot, hook_event_name: "afterFileEdit", file_path: binary });
         invoke(stopCommand, { ...multiRoot, hook_event_name: "stop" });
-        const multiCalls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+        const multiCalls = directCalls();
         assert.equal(multiCalls.length, calls.length + 1);
         assert.equal(multiCalls.at(-1)[1], secondFile);
         assert.equal(multiCalls.at(-1)[multiCalls.at(-1).indexOf("--project-folder") + 1], secondProject);
       }
       const stop = { ...base, hook_event_name: app === "cursor" ? "stop" : "Stop", generation_id: "next", turn_id: "next" };
       invoke(stopCommand, stop);
-      calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+      calls = directCalls();
       assert.equal(calls.at(-1)[1], app === "cursor" ? "Cursor" : "Codex");
-      const count = calls.length;
+      const count = captured().length;
       invoke(stopCommand, stop);
-      assert.equal(fs.readFileSync(capture, "utf8").trim().split("\n").length, count);
+      assert.equal(captured().length, count);
     }
   } finally {
     console.log = originalLog;

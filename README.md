@@ -107,6 +107,15 @@ Install creates the config file at `~/.wakatime/codex-app-wakatime.config.json`:
 
 ## Troubleshooting
 
+AI transcript tracking stays enabled (`sync_ai_disabled = false`). Codex hooks
+identify the agent and desktop editor separately so direct activity and imported
+transcripts can both appear as **Codex App**. Codex turns run transcript sync once,
+then send direct heartbeats without parsing the same transcripts again. The
+`--sync-ai-disabled` flag applies only to that direct send; transcript sync runs
+separately and the global setting stays enabled. Existing records keep their original
+labels. Other editor plugins and older installations can still contribute their
+own labels, so update the integration on each computer you use.
+
 ```bash
 codex-app-wakatime status
 codex-app-wakatime test
