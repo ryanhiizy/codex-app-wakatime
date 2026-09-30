@@ -35,7 +35,7 @@ test("failed snapshots are restored alongside new edits without downgrading writ
   sending.finish(false);
   sending.finish(false);
   const next = store.claim(payload);
-  assert.deepEqual(next.files, [second, first]);
+  assert.deepEqual(next.files, [first, second]);
   next.finish(true);
 });
 
@@ -115,6 +115,35 @@ test("a partial append cannot swallow the next edit or a failed snapshot", (t) =
   fs.appendFileSync(queue, '{"files":[');
   sending.finish(false);
   const retry = store.claim(payload);
-  assert.deepEqual(retry.files, [second, first]);
+  assert.deepEqual(retry.files, [first, second]);
   retry.finish(true);
+});
+
+test("later turns retire stale abandoned snapshots while preserving recent work and live owners", (t) => {
+  const { store, paths, payload } = setup(t);
+  fs.mkdirSync(paths.turnFilesDir);
+  const base = `${createHash("sha256").update("other:turn").digest("hex")}.jsonl`;
+  const staleDead = path.join(paths.turnFilesDir, `${base}.2147483647.dead.processing`);
+  const staleRetry = path.join(paths.turnFilesDir, `${base}.failed.retry`);
+  const recentDead = path.join(paths.turnFilesDir, `${base}.2147483647.recent.processing`);
+  const staleLive = path.join(paths.turnFilesDir, `${base}.${process.pid}.live.processing`);
+  for (const name of [staleDead, staleRetry, recentDead, staleLive]) fs.writeFileSync(name, "{}\n");
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  for (const name of [staleDead, staleRetry, staleLive]) fs.utimesSync(name, old, old);
+  store.claim(payload).finish(true);
+  assert.equal(fs.existsSync(staleDead), false);
+  assert.equal(fs.existsSync(staleRetry), false);
+  assert.equal(fs.existsSync(recentDead), true);
+  assert.equal(fs.existsSync(staleLive), true);
+});
+
+test("stops without turn IDs also retire stale snapshots", (t) => {
+  const { store, paths } = setup(t);
+  fs.mkdirSync(paths.turnFilesDir);
+  const stale = path.join(paths.turnFilesDir, "old.jsonl.2147483647.dead.processing");
+  fs.writeFileSync(stale, "{}\n");
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  fs.utimesSync(stale, old, old);
+  store.claim({}).finish(true);
+  assert.equal(fs.existsSync(stale), false);
 });

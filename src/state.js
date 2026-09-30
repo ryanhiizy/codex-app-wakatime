@@ -16,6 +16,11 @@ function processIsAlive(pid) {
   }
 }
 
+function processingPid(name) {
+  const match = name.match(/\.jsonl\.(\d+)\.[^.]+\.processing$/);
+  return match ? Number(match[1]) : null;
+}
+
 function parseQueue(text) {
   const files = [];
   for (const line of text.split(/\r?\n/)) {
@@ -78,6 +83,21 @@ function createStore(getPaths) {
       if (error.code === "ENOENT") return;
       throw error;
     }
+    // Other turns may never receive another stop. Retain their abandoned work
+    // for a day, then retire it without attributing it to the current project.
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const name of entries) {
+      if (protectedNames.some((prefix) => name === prefix || name.startsWith(`${prefix}.`))) continue;
+      const pid = processingPid(name);
+      const retry = /^[\w-]+\.jsonl\.[^.]+\.retry$/.test(name);
+      if (!retry && !(pid > 0)) continue;
+      const filePath = path.join(queueDir(), name);
+      try {
+        if (fs.statSync(filePath).mtimeMs < cutoff && (retry || !processIsAlive(pid))) unlinkIfPresent(filePath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
     const queued = entries.filter((name) => name.endsWith(".jsonl") && !protectedNames.includes(name))
       .flatMap((name) => {
         const filePath = path.join(queueDir(), name);
@@ -90,7 +110,7 @@ function createStore(getPaths) {
   };
   const claim = (payload, state = readState()) => {
     const key = getTurnStateKey(payload);
-    if (!key) return { files: [], finish() {} };
+    if (!key) return { files: [], finish() { prune(); } };
     const names = [queuePath(key), legacyPath(key)].filter(Boolean);
     const claimed = [];
     const take = (filePath) => {
@@ -101,16 +121,23 @@ function createStore(getPaths) {
       }
       claimed.push({ filePath: temporary, text: fs.readFileSync(temporary, "utf8") });
     };
-    for (const filePath of names) take(filePath);
-    // Recover a snapshot abandoned when a hook was killed. A live hook owns its snapshot.
+    // Claim retries and abandoned snapshots before the live queue, so the file
+    // cap cannot replace a failed batch with newer edits.
     if (fs.existsSync(queueDir())) {
-      for (const name of fs.readdirSync(queueDir())) {
+      const snapshots = fs.readdirSync(queueDir()).flatMap((name) => {
         const prefix = names.find((filePath) => name.startsWith(`${path.basename(filePath)}.`));
-        if (!prefix || !name.endsWith(".processing")) continue;
-        const pid = Number(name.slice(path.basename(prefix).length + 1).split(".")[0]);
-        if (Number.isInteger(pid) && pid > 0 && !processIsAlive(pid)) take(path.join(queueDir(), name));
-      }
+        if (!prefix) return [];
+        const pid = processingPid(name);
+        if (!name.endsWith(".retry") && !(pid > 0 && !processIsAlive(pid))) return [];
+        const filePath = path.join(queueDir(), name);
+        try { return [{ filePath, mtime: fs.statSync(filePath).mtimeMs }]; } catch (error) {
+          if (error.code === "ENOENT") return [];
+          throw error;
+        }
+      }).sort((a, b) => a.mtime - b.mtime);
+      for (const snapshot of snapshots) take(snapshot.filePath);
     }
+    for (const filePath of names) take(filePath);
     const legacy = state.turnFiles?.[key]?.files;
     const files = mergeFiles(Array.isArray(legacy) ? legacy : [], claimed.flatMap((entry) => parseQueue(entry.text)));
     let finished = false;
@@ -120,8 +147,8 @@ function createStore(getPaths) {
         if (finished) return;
         finished = true;
         for (const entry of claimed) {
-          if (!success) fs.appendFileSync(queuePath(key), `\n${entry.text.trimEnd()}\n`, { mode: 0o600 });
-          unlinkIfPresent(entry.filePath);
+          if (success) unlinkIfPresent(entry.filePath);
+          else fs.renameSync(entry.filePath, `${queuePath(key)}.${randomUUID()}.retry`);
         }
         if (success) {
           const fresh = readState();

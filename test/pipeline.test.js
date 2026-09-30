@@ -95,3 +95,23 @@ test("unavailable queue storage still responds to both edit and stop hooks", (t)
   }
   assert.equal(f.calls().length, 0);
 });
+
+test("the retry cap prioritizes failed files over edits added during a send", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(f.settings, '{"maxFileHeartbeats":2}');
+  const { project, payload, files } = turn(f, 2);
+  const { createStore } = require("../src/state");
+  const store = createStore(() => ({ stateFile: path.join(f.home, "state.json"),
+    turnFilesDir: path.join(f.home, "turns"), configFile: f.settings }));
+  const sending = store.claim(payload);
+  const fresh = ["fresh-a.js", "fresh-b.js"].map((name) => ({ path: path.join(project, name), isWrite: true }));
+  fresh.forEach((file) => fs.writeFileSync(file.path, "const value = 1;\n"));
+  store.remember(payload, fresh);
+  sending.finish(false);
+  assert.equal(f.run(["hook"], payload).status, 0);
+  const [sync, batch] = f.calls();
+  assert.ok(sync.args.includes("--sync-ai-activity"));
+  assert.equal(arg(batch, "--entity"), files[0]);
+  assert.deepEqual(JSON.parse(batch.input).map((item) => item.entity), [files[1]]);
+  assert.deepEqual(fs.readdirSync(path.join(f.home, "turns")), []);
+});

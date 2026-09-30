@@ -154,7 +154,9 @@ The source is split by responsibility:
 Edit hooks append to a local queue without launching WakaTime or Git. Stop hooks
 claim a snapshot so later edits survive cleanup, retain failed sends for retry,
 and recognize queues written by older versions. Dead-process snapshots recover
-on the next stop for that turn. WakaTime may also buffer successful sends in its
+on the next stop for that turn. Failed snapshots are retried before newly queued
+edits. Abandoned snapshots and retries from other turns expire after 24 hours;
+live hooks retain ownership of their snapshots. WakaTime may also buffer successful sends in its
 own offline queue under its normal upload rate limit.
 
 Files in the same project are sent in one CLI invocation using
