@@ -517,3 +517,33 @@ test("app selection validates options", () => {
   assert.throws(() => cli.parseOptions(["--app"]), /Missing value/);
   assert.throws(() => cli.resolveRuntimePaths({ app: "unknown" }), /Unsupported app/);
 });
+
+test("failed standalone sync preserves transcript parsing for the direct send", () => {
+  const { spawnSync } = require("node:child_process");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "wakatime-sync-fallback-"));
+  const capture = path.join(home, "calls.jsonl");
+  const binary = path.join(home, "fake-wakatime");
+  const config = path.join(home, ".wakatime.cfg");
+  fs.writeFileSync(config, "[settings]\nsync_ai_disabled = false\n");
+  fs.writeFileSync(binary, `#!${process.execPath}
+const args = process.argv.slice(2);
+require('node:fs').appendFileSync(${JSON.stringify(capture)}, JSON.stringify(args) + '\\n');
+process.exit(args.includes('--sync-ai-activity') ? 2 : 0);
+`, { mode: 0o755 });
+  try {
+    const result = spawnSync(process.execPath, [path.resolve(__dirname, "../bin/codex-app-wakatime.js"),
+      "test", home, "--home", home, "--wakatime-cli", binary,
+      "--wakatime-config", config,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].includes("--sync-ai-activity"));
+    assert.ok(calls[1].includes("--entity"));
+    assert.ok(!calls[1].includes("--sync-ai-disabled"));
+    assert.equal(calls[1][calls[1].indexOf("--plugin") + 1], `codex-app/${packageJson.version}`);
+    assert.equal(fs.readFileSync(config, "utf8"), "[settings]\nsync_ai_disabled = false\n");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

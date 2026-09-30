@@ -1095,7 +1095,7 @@ function buildPluginString(options = {}) {
 }
 
 function syncAiTranscripts(paths = getPaths()) {
-  if (!buildPluginString().startsWith("Codex ")) return;
+  if (!buildPluginString().startsWith("Codex ")) return false;
   const launch = buildWakatimeLaunch(paths.wakatimeCli);
   const result = spawnSync(launch.command, [...launch.argsPrefix,
     "--sync-ai-activity", "--plugin", buildPluginString({ includeAgent: false }),
@@ -1104,7 +1104,9 @@ function syncAiTranscripts(paths = getPaths()) {
   ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   if (result.error || result.status !== 0) {
     logDebug(`AI transcript sync failed: ${result.error?.message || result.stderr || result.status}`);
+    return false;
   }
+  return true;
 }
 
 function sendHeartbeat(params, paths = getPaths()) {
@@ -1121,7 +1123,7 @@ function sendHeartbeat(params, paths = getPaths()) {
     "--category",
     params.category || "ai coding",
     "--plugin",
-    buildPluginString(),
+    buildPluginString({ includeAgent: params.transcriptsSynced === true }),
     "--config",
     paths.wakatimeConfig,
     "--log-file",
@@ -1134,7 +1136,7 @@ function sendHeartbeat(params, paths = getPaths()) {
 
   // Transcripts are synced once separately with the unprefixed identity. Letting
   // the legacy parser prepend Codex again would recreate the editor label split.
-  if (buildPluginString().startsWith("Codex ")) args.push("--sync-ai-disabled");
+  if (params.transcriptsSynced === true) args.push("--sync-ai-disabled");
 
   if (params.projectFolder) {
     args.push("--project-folder", params.projectFolder);
@@ -1174,13 +1176,14 @@ function sendHeartbeat(params, paths = getPaths()) {
   return { ok: true, entity: params.entity };
 }
 
-function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd)) {
+function sendProjectHeartbeat(cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false) {
   const paths = getPaths();
   const project = basenameAny(projectRoot);
   return sendHeartbeat({
     entity: paths.app === "cursor" ? "Cursor" : "Codex",
     entityType: "app",
     project,
+    transcriptsSynced,
   }, paths);
 }
 
@@ -1195,7 +1198,7 @@ function limitFilesForHeartbeats(files, maxFileHeartbeats = getMaxFileHeartbeats
   return files.slice(0, maxFileHeartbeats);
 }
 
-function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd)) {
+function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd), transcriptsSynced = false) {
   const paths = getPaths();
   const heartbeatProjectFolder = toHeartbeatPath(projectRoot, paths);
   const filesToSend = limitFilesForHeartbeats(files);
@@ -1215,6 +1218,7 @@ function sendFileHeartbeats(files, cwd, projectRoot = resolveProjectRoot(cwd)) {
       entityType: "file",
       projectFolder: fileProjectFolder,
       isWrite: file.isWrite,
+      transcriptsSynced,
     }, paths);
 
     if (result.ok) {
@@ -1474,12 +1478,12 @@ async function runHook(options = {}) {
 
   let sent = false;
 
-  syncAiTranscripts();
+  const transcriptsSynced = syncAiTranscripts();
 
   if (files.length > 0) {
-    sent = sendFileHeartbeats(files, cwd, projectRoot);
+    sent = sendFileHeartbeats(files, cwd, projectRoot, transcriptsSynced);
   } else {
-    sent = sendProjectHeartbeat(cwd, projectRoot).ok;
+    sent = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced).ok;
   }
 
   if (sent) {
@@ -1642,8 +1646,8 @@ function doctor(options = {}) {
 function test(targetPath) {
   const cwd = targetPath || process.cwd();
   const projectRoot = resolveProjectRoot(cwd);
-  syncAiTranscripts();
-  const result = sendProjectHeartbeat(cwd);
+  const transcriptsSynced = syncAiTranscripts();
+  const result = sendProjectHeartbeat(cwd, projectRoot, transcriptsSynced);
   console.log(JSON.stringify({
     ...result,
     project: basenameAny(projectRoot),

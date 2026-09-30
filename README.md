@@ -112,7 +112,8 @@ identify the agent and desktop editor separately so direct activity and imported
 transcripts can both appear as **Codex App**. Codex turns run transcript sync once,
 then send direct heartbeats without parsing the same transcripts again. The
 `--sync-ai-disabled` flag applies only to that direct send; transcript sync runs
-separately and the global setting stays enabled. Existing records keep their original
+separately and the global setting stays enabled. If standalone sync fails, the
+direct send falls back to WakaTime's normal transcript parsing. Existing records keep their original
 labels. Other editor plugins and older installations can still contribute their
 own labels, so update the integration on each computer you use.
 
